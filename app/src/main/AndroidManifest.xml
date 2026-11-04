@@ -2,7 +2,9 @@
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="30" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
-    <application android:label="Voyah Camera" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:hardwareAccelerated="true">
+    <queries><package android:name="com.qinggan.canbus.service" /></queries>
+    <application android:label="Voyah Сторож Lite" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:hardwareAccelerated="true">
+        <provider android:name=".RecordingProvider" android:authorities="local.codex.voyahcameralab.recordings" android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".MainActivity" android:screenOrientation="landscape" android:resizeableActivity="true" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

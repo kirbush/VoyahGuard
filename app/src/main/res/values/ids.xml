@@ -1,19 +1,20 @@
 <resources>
     <item name="camera_picker" type="id"/>
-    <item name="preview_button" type="id"/>
     <item name="record_button" type="id"/>
     <item name="stop_button" type="id"/>
-    <item name="report_button" type="id"/>
     <item name="video_button" type="id"/>
     <item name="camera_preview" type="id"/>
     <item name="status_text" type="id"/>
-    <item name="crop_checkbox" type="id"/>
-    <item name="trim_padding_checkbox" type="id"/>
-    <item name="avm_layout" type="id"/>
     <item name="settings_button" type="id"/>
     <item name="advanced_settings_button" type="id"/>
-    <item name="close_camera_button" type="id"/>
     <item name="auto_record_checkbox" type="id"/>
-    <item name="switch_view_button" type="id"/>
-    <item name="view_picker" type="id"/>
+    <item name="record_timer" type="id"/>
+    <item name="power_status" type="id"/>
+    <item name="memory_status" type="id"/>
+    <item name="power_hold_checkbox" type="id"/>
+    <item name="power_duration_picker" type="id"/>
+    <item name="storage_policy_picker" type="id"/>
+    <item name="storage_percent_picker" type="id"/>
+    <item name="segment_picker" type="id"/>
+    <item name="padding_correction_checkbox" type="id"/>
 </resources>

@@ -5,13 +5,10 @@ import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
-import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.*;
 import android.net.Uri;
 import android.os.*;
-import android.provider.MediaStore;
 import android.util.Size;
 import android.view.*;
 import android.widget.*;
@@ -21,215 +18,104 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 
+/** Visible-only recorder; camera and GLES operations share the capture queue. */
 public final class MainActivity extends Activity {
-  private CameraManager manager;private HandlerThread captureThread;private Handler capture,main;
-  private TextureView texture;private TextView notice,recordTime,viewName;private CameraButton recordButton,stopButton,settingsButton,viewButton;
-  private SharedPreferences preferences;private AlertDialog settingsDialog;
-  private final CaptureGate gate=new CaptureGate();
-  private final FrameHealth health=new FrameHealth();private final RootAvmController avm=new RootAvmController();
-  private final ExecutorService controlWorker=Executors.newSingleThreadExecutor();private Future<?> viewRequest;
-  private int selectedView,appliedView;private boolean switching,stallReported;private String viewError="";
-  private CameraDevice camera;private CameraCaptureSession session;private GlCameraRenderer renderer;
-  private volatile boolean resumed;private boolean opening,recording,recordStarting,recordStopping,autoPreview=true,autoRecord,autoClose,settingsVisible;
-  private boolean cameraOnly=true,trimPadding;private int layout,activeToken;private long frames,recordStartedAt;
-  private String selectedId="1",cameraId="",detail="",message="Подключение камеры…";private Uri lastVideo;
-  private String[] cameraIds=new String[0];private JSONObject inventory;
-  private final ExecutorService inventoryWorker=Executors.newSingleThreadExecutor();
-  private final Runnable frameWatch=new Runnable(){public void run(){
-    if(!opening)return;
-    if(health.stalled(SystemClock.elapsedRealtime())){
-      if(!stallReported){stallReported=true;if(recording)stopRecording();setStatus("Нет новых кадров. Ожидаем видеопоток…");}
-      updateUi();
-    }
-    main.postDelayed(this,1000);
+  private final CaptureGate gate=new CaptureGate();private final FrameHealth health=new FrameHealth();private final LaunchPolicy launch=new LaunchPolicy();
+  private final ExecutorService controls=Executors.newSingleThreadExecutor(),files=Executors.newSingleThreadExecutor();
+  private Handler main,capture;private HandlerThread captureThread;private CameraManager manager;private CameraDevice camera;private CameraCaptureSession session;private GlCameraRenderer renderer;
+  private SharedPreferences preferences;private PowerHoldController power;private TextureView texture;private TextView status,timer,powerText,memoryText;private Button startButton,stopButton,archiveButton;private AlertDialog settingsDialog;
+  private volatile boolean resumed,destroyed,powerForSession;private volatile int recordEpoch;
+  private boolean opening,closing,recording,recordStarting,recordStopping,settingsVisible,paddingCorrected,autoPreview=true,captureClosing,powerQuery,memoryQuery;
+  private int activeToken;private long frames,recordStartedAt,lastPowerQuery,lastMemoryQuery;
+  private String selectedId="1",cameraId="",detail="",message="Подключение камеры…";private String[] cameraIds=new String[0];private Uri lastVideo,exportSource;
+  private final Runnable tick=new Runnable(){public void run(){
+    if(destroyed)return;long now=SystemClock.elapsedRealtime();
+    if(opening&&health.stalled(now))closeCamera("Видеопоток остановился. Нажмите Старт для подключения.");
+    if(recording&&powerForSession&&now-lastPowerQuery>=10000&&!powerQuery){lastPowerQuery=now;powerQuery=true;controls.execute(()->{if(powerForSession)power.refresh();main.post(()->{powerQuery=false;updateUi();});});}
+    if(now-lastMemoryQuery>=5000&&!memoryQuery)refreshMemory();updateUi();main.postDelayed(this,500);
   }};
-  private final Runnable recordClock=new Runnable(){public void run(){
-    if(!recording)return;long seconds=(SystemClock.elapsedRealtime()-recordStartedAt)/1000;
-    recordTime.setText(String.format(Locale.ROOT,"●  %02d:%02d",seconds/60,seconds%60));main.postDelayed(this,500);
-  }};
-
   @Override public void onCreate(Bundle state){
-    super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON|WindowManager.LayoutParams.FLAG_FULLSCREEN);
-    getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-    preferences=getSharedPreferences("camera",MODE_PRIVATE);selectedId=preferences.getString("camera_id","1");layout=preferences.getInt("layout",0);cameraOnly=preferences.getBoolean("camera_only",true);trimPadding=preferences.getBoolean("trim_padding",false);selectedView=preferences.getInt("view",0);
-    String savedVideo=preferences.getString("last_video",null);if(savedVideo!=null)lastVideo=Uri.parse(savedVideo);
-    manager=(CameraManager)getSystemService(CAMERA_SERVICE);main=new Handler(Looper.getMainLooper());
-    captureThread=new HandlerThread("VoyahCameraCapture");captureThread.start();capture=new Handler(captureThread.getLooper());
-    readIntent(getIntent());buildUi();
+    super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON|WindowManager.LayoutParams.FLAG_FULLSCREEN);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+    preferences=getSharedPreferences("camera",MODE_PRIVATE);selectedId=preferences.getString("camera_id","1");main=new Handler(Looper.getMainLooper());manager=(CameraManager)getSystemService(CAMERA_SERVICE);power=new PowerHoldController(this);
+    captureThread=new HandlerThread("SentryCapture");captureThread.start();capture=new Handler(captureThread.getLooper());readLaunch(getIntent());if(state!=null){launch.restore(state.getBoolean("auto_record_pending",false));String source=state.getString("export_source");if(source!=null)exportSource=Uri.parse(source);}buildUi();tick.run();
   }
-  private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
-  private TextView label(String value,int size){TextView view=new TextView(this);view.setText(value);view.setTextColor(Color.WHITE);view.setTextSize(size);view.setPadding(dp(8),dp(6),dp(8),dp(6));return view;}
-  private GradientDrawable pill(int color,int radius){GradientDrawable shape=new GradientDrawable();shape.setColor(color);shape.setCornerRadius(dp(radius));return shape;}
+  private void readLaunch(Intent intent){launch.newLaunch(intent.getBooleanExtra("auto_record",preferences.getBoolean("auto_record",true)));autoPreview=intent.getBooleanExtra("auto_preview",true)||launch.isPending();String id=intent.getStringExtra("camera_id");if(id!=null)selectedId=id;}
+  @Override protected void onSaveInstanceState(Bundle state){state.putBoolean("auto_record_pending",launch.isPending());if(exportSource!=null)state.putString("export_source",exportSource.toString());super.onSaveInstanceState(state);}
+  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);closeCamera("Новый запуск: подключение…");setIntent(intent);readLaunch(intent);if(resumed)refreshInventory();}
+  @Override protected void onResume(){super.onResume();resumed=true;if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.CAMERA},1);else refreshInventory();}
+  @Override protected void onStop(){resumed=false;autoPreview=true;launch.stop();closeCamera("Камера освобождена: приложение скрыто.");super.onStop();}
+  @Override protected void onDestroy(){destroyed=true;gate.cancel();recordEpoch++;main.removeCallbacks(tick);if(settingsDialog!=null)settingsDialog.dismiss();capture.post(()->{try{stopInternal();}finally{releasePower();controls.shutdown();captureThread.quitSafely();}});files.shutdown();super.onDestroy();}
+  @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);if(code==1&&results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED)refreshInventory();else{launch.stop();setStatus("Разрешите доступ к камере в настройках Android.");}}
+  private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
+  private TextView label(String text,int size){TextView v=new TextView(this);v.setText(text);v.setTextColor(Color.WHITE);v.setTextSize(size);v.setPadding(dp(8),dp(2),dp(8),dp(2));return v;}
+  private Button button(String text,int id){Button b=new Button(this);b.setText(text);b.setContentDescription(text);b.setTextSize(15);b.setMinHeight(dp(48));b.setId(id);return b;}
   private void buildUi(){
-    FrameLayout root=new FrameLayout(this);root.setBackgroundColor(Color.BLACK);
-    texture=new TextureView(this);texture.setId(R.id.camera_preview);root.addView(texture,new FrameLayout.LayoutParams(-1,-1));
-    notice=label(message,18);notice.setId(R.id.status_text);notice.setGravity(Gravity.CENTER);notice.setBackground(pill(0xB0181B20,12));
-    FrameLayout.LayoutParams noticeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER);noticeParams.leftMargin=dp(24);noticeParams.rightMargin=dp(24);root.addView(notice,noticeParams);
-    notice.setOnClickListener(v->{if(!opening){autoPreview=false;startPreview();}});
-    recordTime=label("",16);recordTime.setTextColor(0xFFFF5B55);recordTime.setBackground(pill(0xB0181B20,18));
-    FrameLayout.LayoutParams timeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);timeParams.topMargin=dp(20);timeParams.leftMargin=dp(24);root.addView(recordTime,timeParams);
-    viewButton=new CameraButton(this,CameraButton.SWITCH,"Переключить переднюю и заднюю камеры");viewButton.setId(R.id.switch_view_button);
-    FrameLayout.LayoutParams viewParams=new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.TOP|Gravity.LEFT);viewParams.topMargin=dp(16);viewParams.leftMargin=dp(24);root.addView(viewButton,viewParams);viewButton.setOnClickListener(v->requestView(appliedView==1?2:1,true));
-    viewName=label("360",13);FrameLayout.LayoutParams nameParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);nameParams.topMargin=dp(29);nameParams.leftMargin=dp(86);root.addView(viewName,nameParams);
-    timeParams.topMargin=dp(80);
-    settingsButton=new CameraButton(this,CameraButton.GEAR,"Настройки");settingsButton.setId(R.id.settings_button);
-    FrameLayout.LayoutParams gearParams=new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.TOP|Gravity.RIGHT);gearParams.topMargin=dp(16);gearParams.rightMargin=dp(24);root.addView(settingsButton,gearParams);settingsButton.setOnClickListener(v->showSettings());
-    LinearLayout controls=new LinearLayout(this);controls.setGravity(Gravity.CENTER);controls.setOrientation(LinearLayout.HORIZONTAL);
-    recordButton=new CameraButton(this,CameraButton.RECORD,"Начать запись");recordButton.setId(R.id.record_button);controls.addView(recordButton,new LinearLayout.LayoutParams(dp(64),dp(64)));recordButton.setOnClickListener(v->startRecording());
-    stopButton=new CameraButton(this,CameraButton.STOP,"Остановить запись");stopButton.setId(R.id.stop_button);LinearLayout.LayoutParams stopParams=new LinearLayout.LayoutParams(dp(64),dp(64));stopParams.leftMargin=dp(20);controls.addView(stopButton,stopParams);stopButton.setOnClickListener(v->stopRecording());
-    FrameLayout.LayoutParams controlsParams=new FrameLayout.LayoutParams(-2,dp(64),Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);controlsParams.bottomMargin=dp(20);root.addView(controls,controlsParams);
-    root.getViewTreeObserver().addOnGlobalLayoutListener(()->{
-      Rect visible=new Rect();root.getWindowVisibleDisplayFrame(visible);int[] origin=new int[2];root.getLocationOnScreen(origin);
-      int insetBottom=Math.max(0,origin[1]+root.getHeight()-visible.bottom),insetRight=Math.max(0,origin[0]+root.getWidth()-visible.right);
-      int newBottom=dp(20)+insetBottom,newRight=dp(24)+insetRight;
-      if(controlsParams.bottomMargin!=newBottom){controlsParams.bottomMargin=newBottom;controls.setLayoutParams(controlsParams);}
-      if(gearParams.rightMargin!=newRight){gearParams.rightMargin=newRight;settingsButton.setLayoutParams(gearParams);}
-    });
-    setContentView(root);updateUi();
-    texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener(){
-      public void onSurfaceTextureAvailable(SurfaceTexture surface,int w,int h){maybeAutoStart();}
-      public void onSurfaceTextureSizeChanged(SurfaceTexture surface,int w,int h){capture.post(()->{if(renderer!=null)renderer.resize(w,h);});}
-      public boolean onSurfaceTextureDestroyed(SurfaceTexture surface){closeCamera("Окно закрыто");capture.post(surface::release);return false;}
-      public void onSurfaceTextureUpdated(SurfaceTexture surface){}
-    });
+    LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(0xFF10151B);LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);
+    header.addView(label("Voyah Сторож Lite",18),new LinearLayout.LayoutParams(0,dp(42),1));timer=label("00:00:00",18);timer.setId(R.id.record_timer);timer.setGravity(Gravity.CENTER);header.addView(timer,new LinearLayout.LayoutParams(dp(112),dp(42)));
+    Button settings=button("⚙",R.id.settings_button);settings.setContentDescription("Настройки");header.addView(settings,new LinearLayout.LayoutParams(dp(56),dp(44)));settings.setOnClickListener(v->showSettings());root.addView(header);
+    status=label(message,14);status.setId(R.id.status_text);status.setMaxLines(2);root.addView(status);
+    texture=new TextureView(this);texture.setId(R.id.camera_preview);root.addView(texture,new LinearLayout.LayoutParams(-1,0,1));
+    powerText=label(power.statusText(),12);powerText.setId(R.id.power_status);powerText.setMaxLines(2);root.addView(powerText);memoryText=label("Память: проверка…",12);memoryText.setId(R.id.memory_status);memoryText.setMaxLines(1);root.addView(memoryText);
+    LinearLayout actions=new LinearLayout(this);startButton=button("Старт",R.id.record_button);stopButton=button("Стоп",R.id.stop_button);archiveButton=button("Записи",R.id.video_button);for(Button b:new Button[]{startButton,stopButton,archiveButton})actions.addView(b,new LinearLayout.LayoutParams(0,dp(52),1));root.addView(actions);
+    startButton.setOnClickListener(v->{if(!opening){launch.newLaunch(true);autoPreview=true;startPreview();}else startRecording();});stopButton.setOnClickListener(v->stopRecording());archiveButton.setOnClickListener(v->showArchive());setContentView(root);
+    texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener(){public void onSurfaceTextureAvailable(SurfaceTexture s,int w,int h){maybeAutoStart();}public void onSurfaceTextureSizeChanged(SurfaceTexture s,int w,int h){capture.post(()->{if(renderer!=null)renderer.resize(w,h);});}public boolean onSurfaceTextureDestroyed(SurfaceTexture s){closeCamera("Окно предпросмотра закрыто.");capture.post(s::release);return false;}public void onSurfaceTextureUpdated(SurfaceTexture s){}});updateUi();
   }
-  private void readIntent(Intent intent){
-    autoPreview=intent.getBooleanExtra("auto_preview",true)||intent.getBooleanExtra("auto_record",false);
-    autoRecord=intent.getBooleanExtra("auto_record",preferences.getBoolean("auto_record",false));autoClose=intent.getBooleanExtra("auto_close",false);
-    String requested=intent.getStringExtra("camera_id");if(requested!=null)selectedId=requested;
-  }
-  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);closeCamera("Подключение камеры…");setIntent(intent);readIntent(intent);refreshInventory();}
-  @Override protected void onResume(){super.onResume();resumed=true;autoPreview=true;autoRecord=getIntent().getBooleanExtra("auto_record",preferences.getBoolean("auto_record",false));if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.CAMERA},1);else refreshInventory();}
-  @Override protected void onPause(){super.onPause();}
-  @Override protected void onStop(){resumed=false;autoPreview=false;if(viewRequest!=null)viewRequest.cancel(true);closeCamera("Камера освобождена");super.onStop();}
-  @Override protected void onDestroy(){gate.cancel();inventoryWorker.shutdownNow();controlWorker.shutdownNow();main.removeCallbacks(recordClock);main.removeCallbacks(frameWatch);if(settingsDialog!=null)settingsDialog.dismiss();capture.post(()->{stopInternal();captureThread.quitSafely();});super.onDestroy();}
-  @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(code==1&&results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED){autoPreview=true;refreshInventory();}else setStatus("Разрешите доступ к камере в настройках Android");}
-  private void refreshInventory(){
-    try{cameraIds=manager.getCameraIdList();if(!Arrays.asList(cameraIds).contains(selectedId)){selectedId=Arrays.asList(cameraIds).contains("1")?"1":(cameraIds.length>0?cameraIds[0]:"");}maybeAutoStart();}
-    catch(Exception error){setStatus("Камера недоступна: "+error.getMessage());}
-    inventoryWorker.execute(()->{try{JSONObject result=DeviceInventory.read(this,manager);writeLocal("inventory.json",result.toString(2));main.post(()->{if(!isDestroyed()){inventory=result;updateUi();}});}catch(Exception error){android.util.Log.w("VoyahCameraLab","Inventory",error);}});
-  }
-  private void maybeAutoStart(){if(autoPreview&&resumed&&!settingsVisible&&texture.isAvailable()&&!selectedId.isEmpty()&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED){autoPreview=false;startPreview();}}
+  private void refreshInventory(){try{cameraIds=manager.getCameraIdList();if(!Arrays.asList(cameraIds).contains(selectedId))selectedId=Arrays.asList(cameraIds).contains("1")?"1":"";if(selectedId.isEmpty()){launch.stop();setStatus("Видеовход 1 отсутствует. Другой вход можно выбрать вручную в дополнительных настройках.");}else maybeAutoStart();}catch(Exception e){launch.stop();setStatus("Камера недоступна: "+e.getMessage());}}
+  private void maybeAutoStart(){if(autoPreview&&resumed&&!destroyed&&!closing&&!opening&&!settingsVisible&&texture.isAvailable())startPreview();}
   private void startPreview(){
-    if(!resumed||!texture.isAvailable()||opening||selectedId.isEmpty())return;
-    if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){setStatus("Нужно разрешение на камеру");return;}
-    cameraId=selectedId;String id=cameraId;boolean useAvm="1".equals(id),only=cameraOnly,trim=trimPadding;int chosenLayout=layout;
-    SurfaceTexture output=texture.getSurfaceTexture();int width=texture.getWidth(),height=texture.getHeight();
-    int token=gate.begin();activeToken=token;opening=true;frames=0;health.reset();stallReported=false;appliedView=0;setStatus("Подключение камеры…");
-    main.removeCallbacks(frameWatch);main.postDelayed(frameWatch,1000);
-    if(useAvm&&selectedView>0)requestView(selectedView,false);
-    capture.post(()->{
-      if(!gate.accepts(token)||!resumed)return;
-      try{
-        CameraCharacteristics characteristics=manager.getCameraCharacteristics(id);Size size=DeviceInventory.selectSize(characteristics,id);
-        Integer orientation=characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);FramePolicy policy=new FramePolicy(size.getWidth(),size.getHeight(),orientation==null?0:orientation,useAvm,chosenLayout,only,trim);
-        detail=size.getWidth()+"×"+size.getHeight()+" → "+policy.outputWidth+"×"+policy.outputHeight+(policy.cropBottom>0?" · верхние 60%":"");
-        renderer=new GlCameraRenderer(this,capture,output,width,height,size.getWidth(),size.getHeight(),policy,new GlCameraRenderer.Listener(){
-          public void onFrame(long count){main.post(()->{if(!gate.accepts(token))return;frames=count;health.frame(SystemClock.elapsedRealtime());stallReported=false;if(autoRecord&&count>=3&&!switching){autoRecord=false;startRecording();}setStatus("Вход "+id+" · "+detail+" · кадров "+count);});}
-          public void onError(String error){cameraFailure(token,error);}
-          public void onRecordingFinished(Uri uri,String error){main.post(()->{
-            if(uri!=null){lastVideo=uri;preferences.edit().putString("last_video",uri.toString()).apply();}
-            if(!gate.accepts(token))return;
-            recording=false;recordStarting=false;recordStopping=false;main.removeCallbacks(recordClock);
-            if(uri!=null){setStatus("Видео сохранено");Toast.makeText(MainActivity.this,"Видео сохранено",Toast.LENGTH_SHORT).show();if(autoClose)closeCamera("Камера освобождена");}
-            else{setStatus("Не удалось сохранить запись");Toast.makeText(MainActivity.this,"Не удалось сохранить запись: "+error,Toast.LENGTH_LONG).show();}
-            updateUi();
-          });}
-        });
-        manager.openCamera(id,new CameraDevice.StateCallback(){
-          @Override public void onOpened(CameraDevice device){
-            if(!gate.accepts(token)||!resumed){device.close();return;}camera=device;
-            try{final GlCameraRenderer current=renderer;if(current==null){device.close();return;}
-              device.createCaptureSession(Collections.singletonList(current.cameraSurface),new CameraCaptureSession.StateCallback(){
-                @Override public void onConfigured(CameraCaptureSession configured){
-                  if(!gate.accepts(token)||camera!=device){configured.close();return;}session=configured;
-                  try{CaptureRequest.Builder request=device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);request.addTarget(current.cameraSurface);configured.setRepeatingRequest(request.build(),null,capture);}
-                  catch(Exception error){cameraFailure(token,error.toString());}
-                }
-                @Override public void onConfigureFailed(CameraCaptureSession failed){failed.close();cameraFailure(token,"Не удалось открыть видеопоток");}
-              },capture);
-            }catch(Exception error){cameraFailure(token,error.toString());}
-          }
-          @Override public void onDisconnected(CameraDevice device){device.close();cameraFailure(token,"Камера занята другим приложением");}
-          @Override public void onError(CameraDevice device,int error){device.close();cameraFailure(token,"Камера недоступна ("+error+")");}
-        },capture);
-      }catch(Exception error){cameraFailure(token,error.toString());}
-    });
-    main.postDelayed(()->{if(gate.accepts(token)&&frames==0)closeCamera("Нет видеопотока. Настройки — справа сверху.");},8000);
+    if(!resumed||closing||opening||!texture.isAvailable()||selectedId.isEmpty())return;if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){setStatus("Нет разрешения на камеру.");return;}
+    autoPreview=false;cameraId=selectedId;String id=cameraId;int token=gate.begin();activeToken=token;opening=true;frames=0;paddingCorrected=false;health.reset();setStatus("Подключение видеовхода "+id+"…");SurfaceTexture output=texture.getSurfaceTexture();int width=texture.getWidth(),height=texture.getHeight();boolean correctionRequested=preferences.getBoolean("legacy_padding_correction",false);
+    capture.post(()->{if(!gate.accepts(token)||!resumed)return;try{
+      CameraCharacteristics c=manager.getCameraCharacteristics(id);Size size=CaptureSizes.selectSize(c,id,correctionRequested);Integer rotation=c.get(CameraCharacteristics.SENSOR_ORIENTATION);FramePolicy policy=FramePolicy.forCapture(id,size.getWidth(),size.getHeight(),rotation==null?0:rotation,correctionRequested);String captureDetail=size.getWidth()+"×"+size.getHeight()+" → "+policy.outputWidth+"×"+policy.outputHeight+(policy.paddingCorrected?" · старый профиль низа применён":correctionRequested?" · профиль низа не применён: размер или вход не поддерживается":"");
+      renderer=new GlCameraRenderer(this,capture,output,width,height,size.getWidth(),size.getHeight(),policy,new GlCameraRenderer.Listener(){
+        public void onFrame(long count){main.post(()->{if(!gate.accepts(token))return;frames=count;paddingCorrected=policy.paddingCorrected;detail=captureDetail;health.frame(SystemClock.elapsedRealtime());if(count>=3&&!settingsVisible&&launch.takeAutoRecord())startRecording();if(count==3&&!recording&&!recordStarting)setStatus((paddingCorrected?"Просмотр с коррекцией низа":"Просмотр полного кадра")+" · вход "+id+" · "+detail);else updateUi();});}
+        public void onError(String error){cameraFailure(token,error);}
+        public void onSegmentSaved(Uri uri){main.post(()->{lastVideo=uri;refreshMemory();writeState();});}
+        public void onRecordingFinished(Uri uri,String error){if(!captureClosing&&error==null){powerForSession=false;releasePower();}main.post(()->{if(uri!=null)lastVideo=uri;if(gate.accepts(token)&&!closing){recording=recordStarting=recordStopping=false;launch.stop();if(error==null)setStatus("Запись сохранена. Просмотр продолжается.");else closeCamera("Запись остановлена: "+error);}refreshMemory();writeState();});}
+      });
+      manager.openCamera(id,new CameraDevice.StateCallback(){
+        public void onOpened(CameraDevice device){if(!gate.accepts(token)||!resumed){device.close();return;}camera=device;try{GlCameraRenderer current=renderer;if(current==null){device.close();return;}device.createCaptureSession(Collections.singletonList(current.cameraSurface),new CameraCaptureSession.StateCallback(){
+          public void onConfigured(CameraCaptureSession configured){if(!gate.accepts(token)||camera!=device){configured.close();return;}session=configured;try{CaptureRequest.Builder r=device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);r.addTarget(current.cameraSurface);configured.setRepeatingRequest(r.build(),null,capture);}catch(Exception e){cameraFailure(token,e.toString());}}
+          public void onConfigureFailed(CameraCaptureSession failed){failed.close();cameraFailure(token,"Не удалось открыть видеопоток");}
+        },capture);}catch(Exception e){cameraFailure(token,e.toString());}}
+        public void onDisconnected(CameraDevice device){device.close();cameraFailure(token,"Камера занята другим приложением");}public void onError(CameraDevice device,int error){device.close();cameraFailure(token,"Камера недоступна ("+error+")");}
+      },capture);
+    }catch(Exception e){cameraFailure(token,e.toString());}});
+    main.postDelayed(()->{if(gate.accepts(token)&&frames==0)closeCamera("Нет видеопотока. Выберите режим в штатном 360, затем нажмите Старт.");},8000);
   }
-  private void cameraFailure(int token,String error){main.post(()->{if(gate.accepts(token))closeCamera(error+". Коснитесь для подключения.");});}
+  private void cameraFailure(int token,String error){main.post(()->{if(gate.accepts(token))closeCamera(error+". Нажмите Старт для подключения.");});}
   private void startRecording(){
-    if(!opening||recording||recordStarting||recordStopping||switching||health.stalled(SystemClock.elapsedRealtime())||frames<1)return;
-    if(getExternalFilesDir(null)!=null&&getExternalFilesDir(null).getUsableSpace()<128L*1024*1024){Toast.makeText(this,"Недостаточно свободного места",Toast.LENGTH_LONG).show();return;}
-    int token=activeToken;String id=cameraId;recordStarting=true;updateUi();
-    capture.post(()->{
-      if(!gate.accepts(token)||renderer==null)return;
-      try{renderer.startRecording(id);main.post(()->{if(gate.accepts(token)){recordStarting=false;recording=true;recordStartedAt=SystemClock.elapsedRealtime();updateUi();main.removeCallbacks(recordClock);recordClock.run();setStatus("Запись начата");}});}
-      catch(Exception error){main.post(()->{if(!gate.accepts(token))return;recordStarting=false;updateUi();Toast.makeText(this,"Не удалось начать запись: "+error.getMessage(),Toast.LENGTH_LONG).show();});}
-    });
+    if(!opening||closing||recording||recordStarting||recordStopping||frames<3||health.stalled(SystemClock.elapsedRealtime()))return;launch.stop();recordStarting=true;int token=activeToken,epoch=++recordEpoch;String id=cameraId;int seconds=preferences.getInt("segment_seconds",60),minutes=preferences.getInt("power_hold_minutes",120);boolean hold=preferences.getBoolean("power_hold",false);setStatus("Подготовка записи…");
+    capture.post(()->{if(!gate.accepts(token)||epoch!=recordEpoch||renderer==null)return;try{renderer.startRecording(id,seconds);if(!gate.accepts(token)||epoch!=recordEpoch){renderer.stopRecording();return;}powerForSession=hold;if(hold)controls.execute(()->{if(gate.accepts(token)&&epoch==recordEpoch){power.acquire(minutes);main.post(this::updateUi);}});main.post(()->{if(!gate.accepts(token)||epoch!=recordEpoch)return;recordStarting=false;recording=true;recordStartedAt=SystemClock.elapsedRealtime();lastPowerQuery=recordStartedAt;setStatus((paddingCorrected?"● Запись с коррекцией низа":"● Запись полного AVM-кадра")+" · "+detail);});}catch(Exception e){powerForSession=false;releasePower();main.post(()->{if(gate.accepts(token)&&epoch==recordEpoch){recordStarting=recording=false;setStatus("Не удалось начать запись: "+e.getMessage());}});}});
   }
-  private void stopRecording(){
-    if(!recording||recordStopping)return;int token=activeToken;recordStopping=true;updateUi();
-    capture.post(()->{if(gate.accepts(token)&&renderer!=null)renderer.stopRecording();});
-  }
-  private void stopInternal(){
-    if(session!=null){try{session.stopRepeating();}catch(Exception ignored){}session.close();session=null;}
-    if(camera!=null){camera.close();camera=null;}
-    if(renderer!=null){renderer.close();renderer=null;}
-  }
-  private void closeCamera(String reason){gate.cancel();opening=false;autoRecord=false;recording=false;recordStarting=false;recordStopping=false;switching=false;frames=0;health.reset();main.removeCallbacks(recordClock);main.removeCallbacks(frameWatch);capture.post(this::stopInternal);setStatus(reason);}
-  private void requestView(int view,boolean persist){
-    if(switching||!opening||!"1".equals(cameraId)||(view!=1&&view!=2))return;
-    int token=activeToken;switching=true;viewError="";updateUi();
-    viewRequest=controlWorker.submit(()->{
-      if(!gate.accepts(token))return;
-      try{avm.select(this,view);main.post(()->{if(!gate.accepts(token))return;switching=false;appliedView=view;if(persist){selectedView=view;preferences.edit().putInt("view",view).apply();}setStatus("Выбран ракурс: "+(view==1?"передняя":"задняя"));});}
-      catch(Exception error){main.post(()->{if(!gate.accepts(token))return;switching=false;autoRecord=false;viewError=error.getMessage()==null?error.toString():error.getMessage();setStatus("Ракурс не изменён: "+viewError);Toast.makeText(this,viewError,Toast.LENGTH_LONG).show();});}
-    });
-  }
-  private void updateUi(){
-    if(recordButton==null)return;
-    if(settingsDialog!=null){View report=settingsDialog.findViewById(R.id.report_button);if(report!=null)report.setEnabled(inventory!=null);}
-    boolean stalled=health.stalled(SystemClock.elapsedRealtime());recordButton.setEnabled(opening&&frames>0&&!stalled&&!switching&&!recording&&!recordStarting&&!recordStopping);stopButton.setEnabled(recording&&!recordStopping);
-    viewButton.setEnabled(opening&&frames>0&&!switching&&"1".equals(cameraId));viewName.setText(switching?"…":appliedView==1?"Передняя":appliedView==2?"Задняя":"360");
-    recordTime.setVisibility(recording||recordStarting?View.VISIBLE:View.GONE);if(recordStarting)recordTime.setText("●  Подготовка");else if(recordStopping)recordTime.setText("●  Сохранение");
-    notice.setVisibility(opening&&frames>0&&!stalled?View.GONE:View.VISIBLE);notice.setText(stalled?"Нет новых кадров. Ожидаем видеопоток…":message);
-  }
-  private void setStatus(String value){
-    message=value;updateUi();android.util.Log.i("VoyahCameraLab",value);
-    try{JSONObject state=new JSONObject();state.put("message",value);state.put("cameraId",cameraId);state.put("selectedId",selectedId);state.put("cameraOnly",cameraOnly);state.put("trimPadding",trimPadding);state.put("layout",layout);state.put("selectedView",selectedView);state.put("appliedView",appliedView);state.put("switchingView",switching);state.put("viewError",viewError);state.put("frameAgeMs",health.age(SystemClock.elapsedRealtime()));state.put("streamStalled",health.stalled(SystemClock.elapsedRealtime()));state.put("autoRecordOnOpen",preferences.getBoolean("auto_record",false));state.put("frames",frames);state.put("opening",opening);state.put("recording",recording);state.put("settingsVisible",settingsVisible);state.put("lastVideo",lastVideo==null?JSONObject.NULL:lastVideo.toString());state.put("updatedMs",System.currentTimeMillis());writeLocal("state.json",state.toString(2));}catch(Exception ignored){}
-  }
-  private void writeLocal(String name,String value)throws Exception{File directory=getExternalFilesDir(null);if(directory==null)directory=getFilesDir();try(FileOutputStream stream=new FileOutputStream(new File(directory,name))){stream.write(value.getBytes(StandardCharsets.UTF_8));}}
-  private Button settingsAction(LinearLayout panel,String text,int id,Runnable action){Button button=new Button(this);button.setText(text);if(id!=0)button.setId(id);panel.addView(button,new LinearLayout.LayoutParams(-1,dp(48)));button.setOnClickListener(v->action.run());return button;}
+  private void stopRecording(){launch.stop();if(recordStopping||(!recording&&!recordStarting)){updateUi();writeState();return;}recordEpoch++;recordStopping=true;setStatus("Завершение MP4…");int token=activeToken;capture.post(()->{if(renderer!=null)renderer.stopRecording();main.post(()->{if(gate.accepts(token)&&!closing&&recordStopping){recordStarting=recording=recordStopping=false;setStatus("Запись остановлена. Просмотр продолжается.");}});});}
+  private void stopInternal(){captureClosing=true;try{if(session!=null){try{session.stopRepeating();}catch(Exception ignored){}try{session.close();}catch(Exception ignored){}session=null;}if(camera!=null){try{camera.close();}catch(Exception ignored){}camera=null;}if(renderer!=null){try{renderer.close();}catch(Exception error){android.util.Log.w("SentryLite","Renderer cleanup",error);}renderer=null;}}finally{captureClosing=false;powerForSession=false;}}
+  // This is queued from capture only, after file finalization, so an old release cannot follow a new acquire.
+  private void releasePower(){controls.execute(()->{power.release();main.post(()->{if(!destroyed)updateUi();});});}
+  private void closeCamera(String reason){if(destroyed)return;launch.stop();gate.cancel();recordEpoch++;opening=false;frames=0;health.reset();boolean hadRecord=recording||recordStarting||recordStopping;recording=recordStarting=false;recordStopping=hadRecord;setStatus(reason);if(closing)return;closing=true;updateUi();capture.post(()->{try{stopInternal();}finally{releasePower();main.post(()->{closing=false;recordStopping=false;updateUi();writeState();if(!destroyed)maybeAutoStart();});}});}
+  private void updateUi(){if(startButton==null)return;startButton.setEnabled(!closing&&!recording&&!recordStarting&&!recordStopping&&(!opening||frames>=3));stopButton.setEnabled((recording||recordStarting||(opening&&launch.isPending()))&&!recordStopping);archiveButton.setEnabled(!recording&&!recordStarting&&!recordStopping&&!closing);status.setText(message);status.setTextColor(recording?0xFFFF706B:Color.WHITE);long s=recording?Math.max(0,(SystemClock.elapsedRealtime()-recordStartedAt)/1000):0;timer.setText(recordStarting?"Подготовка":recordStopping?"Сохранение":String.format(Locale.ROOT,"%02d:%02d:%02d",s/3600,s/60%60,s%60));powerText.setText(power.statusText());}
+  private void setStatus(String value){message=value;updateUi();writeState();}
+  private void writeState(){try{JSONObject s=new JSONObject();s.put("message",message);s.put("cameraId",cameraId);s.put("selectedId",selectedId);s.put("fullFrame",!paddingCorrected);s.put("paddingCorrectionRequested",preferences.getBoolean("legacy_padding_correction",false));s.put("paddingCorrectionApplied",paddingCorrected);s.put("detail",detail);s.put("frames",frames);s.put("opening",opening);s.put("recording",recording);s.put("recordStarting",recordStarting);s.put("recordStopping",recordStopping);s.put("settingsVisible",settingsVisible);s.put("autoRecordOnOpen",preferences.getBoolean("auto_record",true));s.put("autoRecordPending",launch.isPending());s.put("powerHoldEnabled",preferences.getBoolean("power_hold",false));s.put("powerHoldStatus",power.statusText());s.put("lastVideo",lastVideo==null?JSONObject.NULL:lastVideo.toString());s.put("updatedMs",System.currentTimeMillis());File dir=getExternalFilesDir(null);if(dir!=null)try(FileOutputStream out=new FileOutputStream(new File(dir,"state.json"))){out.write(s.toString(2).getBytes(StandardCharsets.UTF_8));}}catch(Exception ignored){}}
+  private void refreshMemory(){if(memoryQuery||destroyed)return;memoryQuery=true;lastMemoryQuery=SystemClock.elapsedRealtime();files.execute(()->{String text;try{RecordingStore.Snapshot s=new RecordingStore(this).snapshot();text=String.format(Locale.ROOT,"Память: занято %d%% · свободно %.1f ГБ · ролики %.1f ГБ (%d)",s.usedPercent,s.availableBytes/1073741824.0,s.recordingBytes/1073741824.0,s.clips);}catch(Exception e){text="Память: каталог записи недоступен";}String value=text;main.post(()->{memoryQuery=false;if(!destroyed)memoryText.setText(value);});});}
+  private CheckBox checkbox(LinearLayout form,String title,int id,boolean value){CheckBox b=new CheckBox(this);b.setText(title);b.setTextColor(Color.WHITE);b.setId(id);b.setChecked(value);form.addView(b);return b;}
+  private Spinner picker(LinearLayout form,String title,int id,String[] values,int selected){form.addView(label(title,14));Spinner s=new Spinner(this);s.setId(id);s.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,values));s.setSelection(Math.max(0,Math.min(values.length-1,selected)));form.addView(s,new LinearLayout.LayoutParams(-1,dp(48)));return s;}
+  private static int index(int[] values,int n){for(int i=0;i<values.length;i++)if(values[i]==n)return i;return 0;}
   private void showSettings(){
-    if(settingsVisible)return;settingsVisible=true;
-    ScrollView scroll=new ScrollView(this);LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);form.setPadding(dp(20),dp(8),dp(20),dp(8));form.setBackgroundColor(0xFF181B20);scroll.addView(form);
-    form.addView(label("Компоновка источника",16));Spinner composition=new Spinner(this);composition.setId(R.id.avm_layout);composition.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Обычный 360","Парковщик"}));composition.setSelection(layout);form.addView(composition,new LinearLayout.LayoutParams(-1,dp(48)));
-    CheckBox only=new CheckBox(this);only.setId(R.id.crop_checkbox);only.setText("Только вид камеры — без вида сверху");only.setTextColor(Color.WHITE);only.setChecked(cameraOnly);form.addView(only);
-    CheckBox trim=new CheckBox(this);trim.setId(R.id.trim_padding_checkbox);trim.setText("Убрать зелёный низ — верхние 60% кадра");trim.setTextColor(Color.WHITE);trim.setChecked(trimPadding);form.addView(trim);
-    CheckBox automatic=new CheckBox(this);automatic.setId(R.id.auto_record_checkbox);automatic.setText("Начинать запись при открытии");automatic.setTextColor(Color.WHITE);automatic.setChecked(preferences.getBoolean("auto_record",false));form.addView(automatic);
-    form.addView(label("Видео: Movies/VoyahCamera360DVR",13));
-    TextView diagnostic=label("Вход "+selectedId+" · "+detail,12);form.addView(diagnostic);
-    Button video=settingsAction(form,"Последняя запись",R.id.video_button,()->{settingsDialog.dismiss();viewVideo();});video.setVisibility(lastVideo==null?View.GONE:View.VISIBLE);
-    Button report=settingsAction(form,"Сохранить технический отчёт",R.id.report_button,this::exportReport);report.setEnabled(inventory!=null);
-    LinearLayout advanced=new LinearLayout(this);advanced.setOrientation(LinearLayout.VERTICAL);advanced.setVisibility(View.GONE);
-    settingsAction(form,"Дополнительно",R.id.advanced_settings_button,()->{boolean show=advanced.getVisibility()!=View.VISIBLE;advanced.setVisibility(show?View.VISIBLE:View.GONE);((Button)form.findViewById(R.id.advanced_settings_button)).setText(show?"Скрыть дополнительные настройки":"Дополнительно");});form.addView(advanced);
-    advanced.addView(label("Видеовход",16));Spinner source=new Spinner(this);source.setId(R.id.camera_picker);String[] ids=cameraIds.clone();String[] names=new String[ids.length];for(int i=0;i<ids.length;i++)names[i]=ids[i]+("1".equals(ids[i])?" · Камеры 360":" · Видеовход");source.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,names));advanced.addView(source,new LinearLayout.LayoutParams(-1,dp(48)));for(int i=0;i<ids.length;i++)if(ids[i].equals(selectedId))source.setSelection(i);
-    advanced.addView(label("Ракурс при открытии (экспериментально)",16));Spinner viewPicker=new Spinner(this);viewPicker.setId(R.id.view_picker);viewPicker.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Текущий — не переключать","Передняя камера","Задняя камера"}));viewPicker.setSelection(selectedView);advanced.addView(viewPicker,new LinearLayout.LayoutParams(-1,dp(48)));
-    advanced.addView(label("Выбор видеовхода нужен для диагностики. Переключение перед/зад требует совместимой прошивки и доступа su; на других ГУ может быть недоступно.",13));
-    settingsAction(advanced,"Переподключить камеру",R.id.preview_button,()->{settingsDialog.dismiss();closeCamera("Подключение камеры…");startPreview();});
-    settingsAction(advanced,"Освободить камеру",R.id.close_camera_button,()->{settingsDialog.dismiss();closeCamera("Камера освобождена. Коснитесь для подключения.");});
-    settingsDialog=new AlertDialog.Builder(this,AlertDialog.THEME_DEVICE_DEFAULT_DARK).setTitle("Настройки").setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Применить",(dialog,which)->{
-      String next=ids.length>0?ids[Math.max(0,source.getSelectedItemPosition())]:selectedId;boolean changed=!next.equals(selectedId)||layout!=composition.getSelectedItemPosition()||cameraOnly!=only.isChecked()||trimPadding!=trim.isChecked()||selectedView!=viewPicker.getSelectedItemPosition();
-      selectedId=next;layout=composition.getSelectedItemPosition();cameraOnly=only.isChecked();trimPadding=trim.isChecked();selectedView=viewPicker.getSelectedItemPosition();preferences.edit().putString("camera_id",selectedId).putInt("layout",layout).putInt("view",selectedView).putBoolean("camera_only",cameraOnly).putBoolean("trim_padding",trimPadding).putBoolean("auto_record",automatic.isChecked()).apply();
-      if(changed){closeCamera("Подключение камеры…");startPreview();}
-    }).create();
-    settingsDialog.setOnDismissListener(dialog->{settingsVisible=false;settingsDialog=null;});settingsDialog.show();
-    if(settingsDialog.getWindow()!=null){Rect available=new Rect();texture.getWindowVisibleDisplayFrame(available);settingsDialog.getWindow().setLayout(Math.min(dp(440),Math.max(dp(220),available.width()-dp(24))),Math.min(dp(600),Math.max(dp(200),available.height()-dp(24))));}
+    if(settingsVisible)return;settingsVisible=true;writeState();ScrollView scroll=new ScrollView(this);LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);form.setPadding(dp(12),dp(4),dp(12),dp(4));scroll.addView(form);
+    CheckBox automatic=checkbox(form,"Записывать при новом открытии",R.id.auto_record_checkbox,preferences.getBoolean("auto_record",true)),hold=checkbox(form,"Управлять Power Hold во время записи",R.id.power_hold_checkbox,preferences.getBoolean("power_hold",false));
+    int[] durations={30,60,90,120,150,180};Spinner duration=picker(form,"Длительность Power Hold",R.id.power_duration_picker,new String[]{"30 минут","60 минут","90 минут","120 минут","150 минут","180 минут"},index(durations,preferences.getInt("power_hold_minutes",120)));
+    form.addView(label("Питание — со следующей записи. Нужны P, заряд ≥15%, совместимый API и root. Подготовлен — ещё не активен. Ошибка питания не останавливает доступную запись.",12));
+    Spinner storage=picker(form,"При заполнении памяти",R.id.storage_policy_picker,new String[]{"Удалять старые свои ролики","Остановить запись"},"stop".equals(preferences.getString("storage_policy","cycle"))?1:0);String[] thresholds=new String[10];for(int i=0;i<10;i++)thresholds[i]=(50+5*i)+"%";Spinner threshold=picker(form,"Максимальная общая занятость накопителя",R.id.storage_percent_picker,thresholds,(preferences.getInt("max_storage_percent",90)-50)/5);
+    int[] segments={60,180,300};Spinner segment=picker(form,"Длительность фрагмента",R.id.segment_picker,new String[]{"1 минута","3 минуты","5 минут"},index(segments,preferences.getInt("segment_seconds",60)));
+    form.addView(label("Хранение меняется сразу; фрагменты — со следующей записи. Только свои завершённые ролики; резерв 128 МиБ.",12));form.addView(label("По умолчанию — полный поступающий AVM-кадр. Режим выбирается вручную в штатном 360. Четыре ракурса требуют проверки на ГУ.",12));form.addView(label("Android/data/…/files/Movies/Sentry. При удалении приложения ролики могут удалиться. Экспортируйте важное через «Записи».",12));
+    LinearLayout advanced=new LinearLayout(this);advanced.setOrientation(LinearLayout.VERTICAL);advanced.setVisibility(View.GONE);Button more=button("Дополнительно",R.id.advanced_settings_button);form.addView(more);form.addView(advanced);more.setOnClickListener(v->advanced.setVisibility(advanced.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE));String[] ids=cameraIds.length==0?new String[]{selectedId}:cameraIds.clone(),names=new String[ids.length];int selected=0;for(int i=0;i<ids.length;i++){names[i]="Видеовход "+ids[i];if(ids[i].equals(selectedId))selected=i;}Spinner source=picker(advanced,"Видеовход — для диагностики",R.id.camera_picker,names,selected);source.setEnabled(!recording&&!recordStarting&&!recordStopping);advanced.addView(label("ID не обозначает физическую камеру. Lite не переключает передний/задний ракурс. "+detail,12));
+    CheckBox padding=checkbox(advanced,"Убрать зелёный низ — старый профиль",R.id.padding_correction_checkbox,preferences.getBoolean("legacy_padding_correction",false));padding.setEnabled(!recording&&!recordStarting&&!recordStopping&&!closing);advanced.addView(label("Эксперимент: включайте вручную только при нижнем заполнителе. Без распознавания цвета. Профиль для входа 1, 1920×720/1080/1200: верхние 60%, выход 1920×720 до поворота. Другие размеры остаются полными. Применение переподключает просмотр без автозаписи.",12));
+    settingsDialog=new AlertDialog.Builder(this,AlertDialog.THEME_DEVICE_DEFAULT_DARK).setTitle("Настройки Lite").setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Применить",(d,w)->{preferences.edit().putBoolean("auto_record",automatic.isChecked()).putBoolean("power_hold",hold.isChecked()).putInt("power_hold_minutes",durations[duration.getSelectedItemPosition()]).putString("storage_policy",storage.getSelectedItemPosition()==1?"stop":"cycle").putInt("max_storage_percent",50+5*threshold.getSelectedItemPosition()).putInt("segment_seconds",segments[segment.getSelectedItemPosition()]).apply();String next=ids[source.getSelectedItemPosition()];boolean correctionChanged=padding.isChecked()!=preferences.getBoolean("legacy_padding_correction",false);if(!recording&&!recordStarting&&!recordStopping&&!closing&&(!next.equals(selectedId)||correctionChanged)){selectedId=next;preferences.edit().putString("camera_id",next).putBoolean("legacy_padding_correction",padding.isChecked()).apply();launch.stop();autoPreview=true;closeCamera("Применение параметров видеопотока…");}writeState();refreshMemory();}).create();settingsDialog.setOnDismissListener(d->{settingsVisible=false;settingsDialog=null;writeState();maybeAutoStart();});settingsDialog.show();
   }
-  private void exportReport(){
-    try{if(inventory==null){Toast.makeText(this,"Отчёт ещё готовится",Toast.LENGTH_SHORT).show();return;}ContentValues values=new ContentValues();values.put(MediaStore.Downloads.DISPLAY_NAME,"voyah-camera-report-"+System.currentTimeMillis()+".json");values.put(MediaStore.Downloads.MIME_TYPE,"application/json");values.put(MediaStore.Downloads.RELATIVE_PATH,"Download/VoyahCameraLab");Uri uri=getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values);if(uri==null)throw new IOException("Cannot create report");try(OutputStream stream=getContentResolver().openOutputStream(uri)){if(stream==null)throw new IOException("Cannot write report");stream.write(inventory.toString(2).getBytes(StandardCharsets.UTF_8));}Toast.makeText(this,"Отчёт: Download/VoyahCameraLab",Toast.LENGTH_LONG).show();}
-    catch(Exception error){Toast.makeText(this,error.toString(),Toast.LENGTH_LONG).show();}
-  }
-  private void viewVideo(){if(lastVideo==null)return;closeCamera("Камера освобождена");try{startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(lastVideo,"video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));}catch(Exception error){Toast.makeText(this,"Видео: Movies/VoyahCamera360DVR",Toast.LENGTH_LONG).show();}}
+  private long clipTime(File clip){try{return Long.parseLong(clip.getName().split("-")[1]);}catch(Exception ignored){return clip.lastModified();}}
+  private String clipLabel(File clip){return java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.MEDIUM).format(new Date(clipTime(clip)));}
+  private String exportName(File clip){return "Sentry-"+new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss",Locale.ROOT).format(new Date(clipTime(clip)))+".mp4";}
+  private void showArchive(){if(recording||recordStarting||recordStopping||closing)return;launch.stop();files.execute(()->{try{List<File> clips=new RecordingStore(this).list();main.post(()->{if(destroyed||!resumed)return;if(clips.isEmpty()){Toast.makeText(this,"Завершённых записей пока нет",Toast.LENGTH_LONG).show();return;}String[] names=new String[clips.size()];for(int i=0;i<names.length;i++)names[i]=clipLabel(clips.get(i))+" · "+String.format(Locale.ROOT,"%.1f МБ",clips.get(i).length()/1048576.0);new AlertDialog.Builder(this,AlertDialog.THEME_DEVICE_DEFAULT_DARK).setTitle("Записи — экспортируйте важное до удаления приложения").setItems(names,(d,w)->clipActions(clips.get(w))).setNegativeButton("Закрыть",null).show();});}catch(Exception e){main.post(()->Toast.makeText(this,"Записи недоступны: "+e.getMessage(),Toast.LENGTH_LONG).show());}});}
+  private void clipActions(File clip){try{Uri uri=RecordingStore.uri(this,clip);new AlertDialog.Builder(this,AlertDialog.THEME_DEVICE_DEFAULT_DARK).setTitle(clipLabel(clip)).setItems(new String[]{"Воспроизвести","Сохранить в другую папку"},(d,w)->{launch.stop();try{if(w==0){Intent playback=new Intent(Intent.ACTION_VIEW).setDataAndType(uri,"video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);playback.setClipData(ClipData.newRawUri("Видео",uri));startActivity(playback);}else{exportSource=uri;startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("video/mp4").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE,exportName(clip)),2);}}catch(Exception e){Toast.makeText(this,"Не удалось открыть действие: "+e.getMessage(),Toast.LENGTH_LONG).show();}}).show();}catch(Exception e){Toast.makeText(this,"Ролик недоступен",Toast.LENGTH_LONG).show();}}
+  @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request!=2)return;Uri source=exportSource;exportSource=null;if(result!=RESULT_OK||data==null||data.getData()==null||source==null)return;Uri target=data.getData();files.execute(()->{String outcome;try(InputStream in=getContentResolver().openInputStream(source);OutputStream out=getContentResolver().openOutputStream(target)){if(in==null||out==null)throw new IOException("Нет доступа к файлу");byte[] bytes=new byte[65536];int n;while((n=in.read(bytes))!=-1)out.write(bytes,0,n);outcome="Видео экспортировано";}catch(Exception e){outcome="Ошибка экспорта: "+e.getMessage();}String text=outcome;main.post(()->Toast.makeText(this,text,Toast.LENGTH_LONG).show());});}
 }

@@ -2,32 +2,47 @@ package local.codex.voyahcameralab;
 public final class PolicyTest {
   static void check(boolean value,String message){if(!value)throw new AssertionError(message);}
   public static void main(String[] args){
-    FramePolicy normal=new FramePolicy(1280,720,0,false);
+    FramePolicy raw=FramePolicy.fullFrame(1920,1080,0);
+    check(raw.outputWidth==1920&&raw.outputHeight==1080,"Lite keeps every row of the delivered AVM frame");
+    FramePolicy rawTall=FramePolicy.fullFrame(1920,1440,90);
+    check(rawTall.outputWidth==1440&&rawTall.outputHeight==1920,"Full-frame rotation preserves tall four-view geometry");
+    FramePolicy normal=FramePolicy.fullFrame(1280,720,0);
     check(normal.outputWidth==1280&&normal.outputHeight==720,"Normal camera dimensions");
-    FramePolicy full=new FramePolicy(1920,720,0,true);
+    FramePolicy full=FramePolicy.fullFrame(1920,720,0);
     check(full.outputWidth==1920&&full.outputHeight==720,"Ordinary360 fills1920px; do not assume APA padding");
-    FramePolicy avm=new FramePolicy(1920,720,0,true,1,false);
-    check(avm.outputWidth==1440&&avm.outputHeight==720,"APA layout excludes only known empty right columns");
-    check(avm.cropRight==0.75f,"Preserve APA pixel geometry");
-    FramePolicy view=new FramePolicy(1920,1080,0,true,0,true);
-    check(view.outputWidth==1200&&view.outputHeight==720&&view.cropLeft==0.375f&&view.cropRight==1f,"Ordinary360 camera-only excludes toolbar and birdseye");
-    FramePolicy scaledAvm=new FramePolicy(1920,1080,0,true);
-    check(scaledAvm.outputWidth==1920&&scaledAvm.outputHeight==720,"Normalize HAL-scaled AVM1080 back to its720-line geometry");
-    FramePolicy padded=new FramePolicy(1920,1080,0,true,0,true,true);
-    check(Math.abs(padded.cropBottom-0.4f)<0.00001f&&padded.cropTop==1f,"Padded AVM samples only the displayed top60 percent");
-    check(padded.outputWidth==1200&&padded.outputHeight==720,"Padded camera view restores1200x720 geometry instead of shortening output");
-    int firstSourceRow=(int)(1200*(1-(padded.cropBottom+(1-0.5/padded.outputHeight)*(padded.cropTop-padded.cropBottom))));
-    int lastSourceRow=(int)(1200*(1-(padded.cropBottom+(0.5/padded.outputHeight)*(padded.cropTop-padded.cropBottom))));
-    check(firstSourceRow==0&&lastSourceRow==719,"Sampling covers the full720-line image and excludes rows720..1199 of a padded source");
-    check(view.cropBottom==0f&&view.cropTop==1f,"Unpadded/default mode preserves the full texture height");
-    FramePolicy paddedApa=new FramePolicy(1920,1080,90,true,1,true,true);
-    check(paddedApa.outputWidth==720&&paddedApa.outputHeight==880&&paddedApa.cropBottom==padded.cropBottom,"APA crop preserves source bounds and rotated geometry");
-    FramePolicy other=new FramePolicy(1280,720,0,false,0,false,true);
-    check(other.cropBottom==0f&&other.cropTop==1f,"Non-AVM inputs ignore the padding option");
-    FramePolicy rotated=new FramePolicy(1280,720,90,false);
+    FramePolicy tall=FramePolicy.fullFrame(1920,1200,0);
+    check(tall.outputWidth==1920&&tall.outputHeight==1200,"Full-frame source is never normalized to 720 rows");
+    check(raw.cropBottom==0f&&raw.cropTop==1f&&!raw.paddingCorrected,"Default keeps every source row and does not apply the experimental profile");
+    FramePolicy disabled=FramePolicy.forCapture("1",1920,1200,0,false);
+    check(disabled.outputHeight==1200&&!disabled.paddingCorrected&&disabled.cropBottom==0f,"Correction requires explicit opt-in");
+    for(int height:new int[]{720,1080,1200}){
+      FramePolicy corrected=FramePolicy.forCapture("1",1920,height,0,true);
+      check(corrected.paddingCorrected&&corrected.outputWidth==1920&&corrected.outputHeight==720,"Known legacy inputs restore 1920x720 only when requested");
+      check(Math.abs(corrected.cropBottom-0.4f)<0.00001f&&corrected.cropTop==1f,"Legacy profile samples the top 60 percent before producer transform");
+    }
+    FramePolicy corrected=FramePolicy.forCapture("1",1920,1200,0,true);
+    int firstSourceRow=(int)(1200*(1-(corrected.cropBottom+(1-0.5/corrected.outputHeight)*(corrected.cropTop-corrected.cropBottom))));
+    int lastSourceRow=(int)(1200*(1-(corrected.cropBottom+(0.5/corrected.outputHeight)*(corrected.cropTop-corrected.cropBottom))));
+    check(firstSourceRow==0&&lastSourceRow==719,"Legacy profile retains source rows 0..719 and excludes lower filler in the historical 1200-row buffer");
+    FramePolicy correctedRotated=FramePolicy.forCapture("1",1920,1080,90,true);
+    check(correctedRotated.outputWidth==720&&correctedRotated.outputHeight==1920,"Legacy vertical correction preserves full width and quarter-turn geometry");
+    FramePolicy unsupportedTall=FramePolicy.forCapture("1",1920,1440,0,true);
+    check(!unsupportedTall.paddingCorrected&&unsupportedTall.cropBottom==0f&&unsupportedTall.outputHeight==1440,"Unknown four-view geometry stays full-frame even with correction requested");
+    FramePolicy unsupportedWidth=FramePolicy.forCapture("1",1280,720,0,true);
+    check(!unsupportedWidth.paddingCorrected&&unsupportedWidth.cropBottom==0f&&unsupportedWidth.outputWidth==1280,"Other widths stay full-frame");
+    FramePolicy unsupportedSource=FramePolicy.forCapture("0",1920,1080,0,true);
+    check(!unsupportedSource.paddingCorrected&&unsupportedSource.cropBottom==0f&&unsupportedSource.outputHeight==1080,"Other Camera2 inputs stay full-frame");
+    FramePolicy rotated=FramePolicy.fullFrame(1280,720,90);
     check(rotated.outputWidth==720&&rotated.outputHeight==1280,"Portrait sensor rotation");
-    int[] fit=avm.fit(1000,600);
-    check(fit[0]==0&&fit[1]==50&&fit[2]==1000&&fit[3]==500,"Letterbox without distortion");
+    FramePolicy upsideDown=FramePolicy.fullFrame(1280,720,180);
+    check(upsideDown.outputWidth==1280&&upsideDown.outputHeight==720&&upsideDown.rotation==180,"Half-turn preserves source geometry");
+    FramePolicy reversePortrait=FramePolicy.fullFrame(1280,720,-90);
+    check(reversePortrait.outputWidth==720&&reversePortrait.outputHeight==1280&&reversePortrait.rotation==270,"Negative rotation normalizes to a full-frame quarter-turn");
+    check(FramePolicy.fullFrame(1280,720,450).rotation==90,"Extra turns normalize");
+    int[] fit=raw.fit(1000,600);
+    check(fit[0]==0&&fit[1]==18&&fit[2]==1000&&fit[3]==563,"Letterbox without distortion");
+    int[] portraitFit=rotated.fit(1000,600);
+    check(portraitFit[0]==331&&portraitFit[1]==0&&portraitFit[2]==338&&portraitFit[3]==600,"Portrait source is pillarboxed without distortion");
     TimestampClock time=new TimestampClock(1000000000L);
     check(time.next(1000000000L)==0,"First timestamp");
     check(time.next(1000000000L)==1,"Duplicate clock must advance");
@@ -38,6 +53,6 @@ public final class PolicyTest {
     check(!gate.accepts(old),"Late onOpened after close must be rejected");
     int current=gate.begin();check(!gate.accepts(old)&&gate.accepts(current),"Late callback cannot replace a newer session");
     FrameHealth health=new FrameHealth();check(!health.stalled(8000),"Initial no-frame timeout is separate");health.frame(9000);check(!health.stalled(13000)&&health.stalled(14000),"Interrupted stream becomes visible after five seconds");health.frame(15000);check(!health.stalled(15000),"Recovered frames clear stream interruption");health.reset();check(health.age(16000)==-1,"Closed stream forgets old frame time");
-    System.out.println("PASS: AVM geometry, timestamps, late callbacks and frame-stall recovery");
+    System.out.println("PASS: full-frame geometry, timestamps, late callbacks and frame-stall recovery");
   }
 }

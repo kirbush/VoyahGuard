@@ -9,14 +9,14 @@ import android.view.Surface;
 import java.nio.*;
 
 final class GlCameraRenderer {
-  interface Listener {void onFrame(long count);void onError(String error);void onRecordingFinished(Uri uri,String error);}
+  interface Listener {void onFrame(long count);void onError(String error);void onSegmentSaved(Uri uri);void onRecordingFinished(Uri uri,String error);}
   final Surface cameraSurface;
   final FramePolicy policy;
   private final Context context;private final Listener listener;private final SurfaceTexture cameraTexture;
   private final Surface displaySurface;private EGLDisplay display;private EGLContext eglContext;private EGLConfig config;
-  private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;
+  private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;private Uri lastSaved;
   private final float[] transform=new float[16];private final FloatBuffer vertices;
-  private int program,texture,position,coordinates,matrix,crop,cropLeft,vertical,rotation,width,height;private long frames;private boolean closed;
+  private int program,texture,position,coordinates,matrix,vertical,rotation,width,height;private long frames;private boolean closed;
   GlCameraRenderer(Context context,Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
     this.context=context;this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
     displaySurface=new Surface(output);
@@ -34,12 +34,12 @@ final class GlCameraRenderer {
     GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);
     GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);
     String vertex="attribute vec2 aPosition;attribute vec2 aTex;varying vec2 vTex;void main(){gl_Position=vec4(aPosition,0.,1.);vTex=aTex;}";
-    String fragment="#extension GL_OES_EGL_image_external : require\nprecision mediump float;uniform samplerExternalOES image;uniform mat4 uMatrix;uniform float uCrop;uniform float uLeft;uniform vec2 uVertical;uniform float uRotation;varying vec2 vTex;void main(){vec2 uv=vTex;if(uRotation==90.)uv=vec2(vTex.y,1.-vTex.x);else if(uRotation==180.)uv=vec2(1.-vTex.x,1.-vTex.y);else if(uRotation==270.)uv=vec2(1.-vTex.y,vTex.x);uv.x=uLeft+uv.x*(uCrop-uLeft);uv.y=uVertical.x+uv.y*(uVertical.y-uVertical.x);vec2 sampleAt=(uMatrix*vec4(uv,0.,1.)).xy;gl_FragColor=texture2D(image,sampleAt);}";
+    String fragment="#extension GL_OES_EGL_image_external : require\nprecision mediump float;uniform samplerExternalOES image;uniform mat4 uMatrix;uniform vec2 uVertical;uniform float uRotation;varying vec2 vTex;void main(){vec2 uv=vTex;if(uRotation==90.)uv=vec2(vTex.y,1.-vTex.x);else if(uRotation==180.)uv=vec2(1.-vTex.x,1.-vTex.y);else if(uRotation==270.)uv=vec2(1.-vTex.y,vTex.x);uv.y=uVertical.x+uv.y*(uVertical.y-uVertical.x);vec2 sampleAt=(uMatrix*vec4(uv,0.,1.)).xy;gl_FragColor=texture2D(image,sampleAt);}";
     int v=shader(GLES20.GL_VERTEX_SHADER,vertex),f=shader(GLES20.GL_FRAGMENT_SHADER,fragment);
     program=GLES20.glCreateProgram();GLES20.glAttachShader(program,v);GLES20.glAttachShader(program,f);GLES20.glLinkProgram(program);
     int[] linked=new int[1];GLES20.glGetProgramiv(program,GLES20.GL_LINK_STATUS,linked,0);if(linked[0]!=GLES20.GL_TRUE)throw new IllegalStateException(GLES20.glGetProgramInfoLog(program));
     GLES20.glDeleteShader(v);GLES20.glDeleteShader(f);
-    position=GLES20.glGetAttribLocation(program,"aPosition");coordinates=GLES20.glGetAttribLocation(program,"aTex");matrix=GLES20.glGetUniformLocation(program,"uMatrix");crop=GLES20.glGetUniformLocation(program,"uCrop");cropLeft=GLES20.glGetUniformLocation(program,"uLeft");vertical=GLES20.glGetUniformLocation(program,"uVertical");rotation=GLES20.glGetUniformLocation(program,"uRotation");
+    position=GLES20.glGetAttribLocation(program,"aPosition");coordinates=GLES20.glGetAttribLocation(program,"aTex");matrix=GLES20.glGetUniformLocation(program,"uMatrix");vertical=GLES20.glGetUniformLocation(program,"uVertical");rotation=GLES20.glGetUniformLocation(program,"uRotation");
     vertices=ByteBuffer.allocateDirect(16*4).order(ByteOrder.nativeOrder()).asFloatBuffer();
     vertices.put(new float[]{-1,-1,0,0,1,-1,1,0,-1,1,0,1,1,1,1,1}).position(0);
     cameraTexture=new SurfaceTexture(texture);cameraTexture.setDefaultBufferSize(inputWidth,inputHeight);
@@ -56,7 +56,7 @@ final class GlCameraRenderer {
     GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture);
     vertices.position(0);GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,16,vertices);GLES20.glEnableVertexAttribArray(position);
     vertices.position(2);GLES20.glVertexAttribPointer(coordinates,2,GLES20.GL_FLOAT,false,16,vertices);GLES20.glEnableVertexAttribArray(coordinates);
-    GLES20.glUniformMatrix4fv(matrix,1,false,transform,0);GLES20.glUniform1f(crop,policy.cropRight);GLES20.glUniform1f(cropLeft,policy.cropLeft);GLES20.glUniform1f(rotation,policy.rotation);GLES20.glUniform2f(vertical,policy.cropBottom,policy.cropTop);
+    GLES20.glUniformMatrix4fv(matrix,1,false,transform,0);GLES20.glUniform1f(rotation,policy.rotation);GLES20.glUniform2f(vertical,policy.cropBottom,policy.cropTop);
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
     int error=GLES20.glGetError();if(error!=GLES20.GL_NO_ERROR)throw new IllegalStateException("GL error 0x"+Integer.toHexString(error));
   }
@@ -67,20 +67,22 @@ final class GlCameraRenderer {
       draw(width,height,true);if(!EGL14.eglSwapBuffers(display,preview))throw new IllegalStateException("Preview swap failed");
       if(recorder!=null){makeCurrent(encoder);draw(policy.outputWidth,policy.outputHeight,false);EGLExt.eglPresentationTimeANDROID(display,encoder,recorder.clock.next(System.nanoTime())*1000);if(!EGL14.eglSwapBuffers(display,encoder))throw new IllegalStateException("Encoder swap failed");recorder.drain(false);}
       frames++;if(frames==1||frames==3||frames%30==0)listener.onFrame(frames);
-    }catch(Exception failure){listener.onError("GPU/encoder: "+failure);}
+    }catch(Exception failure){String error="GPU/encoder: "+failure;if(recorder!=null)stopRecording(error);listener.onError(error);}
   }
   boolean isRecording(){return recorder!=null;}
-  void startRecording(String cameraId) throws Exception {
+  void startRecording(String cameraId,int segmentSeconds) throws Exception {
     if(closed||recorder!=null)throw new IllegalStateException("Recording not available");
-    makeCurrent(preview);recorder=new AvcRecorder(context,policy.outputWidth,policy.outputHeight,cameraId);
+    makeCurrent(preview);lastSaved=null;recorder=new AvcRecorder(context,policy.outputWidth,policy.outputHeight,cameraId,segmentSeconds,uri->{lastSaved=uri;listener.onSegmentSaved(uri);});
     try{encoder=EGL14.eglCreateWindowSurface(display,config,recorder.input,new int[]{EGL14.EGL_NONE},0);if(encoder==EGL14.EGL_NO_SURFACE)throw new IllegalStateException("Encoder EGL surface");}
     catch(Exception failure){try{recorder.finish();}catch(Exception ignored){}recorder=null;throw failure;}
   }
-  void stopRecording(){
+  void stopRecording(){stopRecording(null);}
+  private void stopRecording(String cause){
     if(recorder==null)return;AvcRecorder finished=recorder;recorder=null;
     try{makeCurrent(preview);}catch(Exception ignored){}
     if(encoder!=EGL14.EGL_NO_SURFACE)EGL14.eglDestroySurface(display,encoder);encoder=EGL14.EGL_NO_SURFACE;
-    try{Uri uri=finished.finish();listener.onRecordingFinished(uri,null);}catch(Exception error){listener.onRecordingFinished(null,error.toString());}
+    String failure=cause;try{Uri uri=finished.finish();if(uri!=null)lastSaved=uri;}catch(Exception error){if(failure==null)failure=error.toString();}
+    listener.onRecordingFinished(lastSaved,failure);
   }
   void close(){
     if(closed)return;closed=true;stopRecording();

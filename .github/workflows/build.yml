@@ -21,19 +21,12 @@ jobs:
         with:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install SDK and native compiler
-        run: sdkmanager 'platforms;android-30' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-      - name: Test native request encoding
-        run: |
-          python -m pip install unicorn==2.1.4
-          python scripts/test_native_protocol.py "$ANDROID_HOME/ndk/27.2.12479018"
+      - name: Install SDK
+        run: sdkmanager 'platforms;android-30' 'build-tools;35.0.0'
       - name: Build and run core checks
         run: ./gradlew :app:corePolicyTest :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: Voyah-Camera-debug
+          name: VoyahGuard-debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14

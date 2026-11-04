@@ -15,5 +15,12 @@ diagnostics/
 *.apk
 !artifacts/Voyah-Camera-0.3.apk
 !artifacts/Voyah-Camera-0.4.apk
+!artifacts/VoyahGuard-Lite-0.5.apk
 __pycache__/
+/AGENTS.md
+/PLAN.md
+/TODO.md
+/DECISIONS.md
+/EVIDENCE.md
+/docs/
 
