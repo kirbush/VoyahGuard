@@ -23,6 +23,7 @@ final class AvmLayout {
   static final int[][] TOP_EXCLUDED_3D = {{258, 270, 348, 415}, {530, 270, 620, 415}, {258, 780, 348, 930}, {530, 780, 620, 930}};
   static final String[] NAMES = {"перед", "лево", "зад", "право"};
 
+  static final int SOURCE_WIDTH = 1920, SOURCE_HEIGHT = 1200;
   static final int SAMPLE_WIDTH = 320, SAMPLE_HEIGHT = 200;
   /** The glyph is read at source resolution from extra rows under the frame in the same sample. */
   static final int GLYPH_X = 1240, GLYPH_Y = 0, GLYPH_WIDTH = 165, GLYPH_HEIGHT = 105;

@@ -20,14 +20,14 @@ final class FramePolicy {
     this.paddingCorrected=paddingCorrected;this.anamorphic=anamorphic;
     // Logical texture top is v=1 before the SurfaceTexture producer transform.
     cropBottom=paddingCorrected?0.4f:0f;cropTop=1f;
-    int visibleHeight=paddingCorrected?720:height;
+    int visibleHeight=paddingCorrected||anamorphic?720:height; // Files must play in true proportions everywhere.
     boolean swap=this.rotation==90||this.rotation==270;
     this.outputWidth=(swap?visibleHeight:width)&~1;
     this.outputHeight=(swap?width:visibleHeight)&~1;
-    displayWidth=outputWidth;displayHeight=anamorphic?720:outputHeight;hiddenLeft=anamorphic?AVM_TOOLBAR_WIDTH:0;
+    displayWidth=outputWidth;displayHeight=outputHeight;hiddenLeft=anamorphic?AVM_TOOLBAR_WIDTH:0;
   }
   /**
-   * Preview only; recording always keeps the full output size.
+   * Preview only; recording always keeps the full output width, OEM toolbar included.
    * @return x, y, width, height of the whole frame, then clipX, clipWidth of its visible columns.
    */
   int[] fit(int width,int height){

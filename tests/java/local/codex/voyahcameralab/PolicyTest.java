@@ -14,7 +14,7 @@ public final class PolicyTest {
     check(tall.outputWidth==1920&&tall.outputHeight==1200,"Full-frame source is never normalized to 720 rows");
     check(raw.cropBottom==0f&&raw.cropTop==1f&&!raw.paddingCorrected,"Default keeps every source row and does not apply the experimental profile");
     FramePolicy disabled=FramePolicy.forCapture("1",1920,1200,0,false);
-    check(disabled.outputHeight==1200&&!disabled.paddingCorrected&&disabled.cropBottom==0f,"Correction requires explicit opt-in");
+    check(disabled.outputHeight==720&&!disabled.paddingCorrected&&disabled.cropBottom==0f&&disabled.cropTop==1f,"The AVM frame is scaled to its true proportions, never cropped, without the legacy opt-in");
     for(int height:new int[]{720,1080,1200}){
       FramePolicy corrected=FramePolicy.forCapture("1",1920,height,0,true);
       check(corrected.paddingCorrected&&corrected.outputWidth==1920&&corrected.outputHeight==720,"Known legacy inputs restore 1920x720 only when requested");
@@ -44,7 +44,7 @@ public final class PolicyTest {
     int[] portraitFit=rotated.fit(1000,600);
     check(portraitFit[0]==331&&portraitFit[1]==0&&portraitFit[2]==338&&portraitFit[3]==600,"Portrait source is pillarboxed without distortion");
     FramePolicy avm=FramePolicy.forCapture("1",1920,1200,0,false);
-    check(avm.anamorphic&&avm.outputWidth==1920&&avm.outputHeight==1200,"Recording keeps the full AVM frame and its buttons");
+    check(avm.anamorphic&&avm.outputWidth==1920&&avm.outputHeight==720,"Recording stores the AVM frame in true 8:3 proportions");
     int[] avmFit=avm.fit(1760,720);
     check(avmFit[0]==-160&&avmFit[1]==0&&avmFit[2]==1920&&avmFit[3]==720,"AVM preview restores 8:3 and pushes the toolbar off the left edge");
     check(avmFit[4]==0&&avmFit[5]==1760,"Only the picture columns remain visible");

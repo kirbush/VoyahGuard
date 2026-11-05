@@ -90,7 +90,7 @@ final class GlCameraRenderer {
       GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,sampleFramebuffer);
       drawQuad(0,glyphH,w,AvmLayout.SAMPLE_HEIGHT); // Bottom-up target: the rows above the glyph strip.
       GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(0,0,AvmLayout.GLYPH_WIDTH,glyphH);
-      drawQuad(-AvmLayout.GLYPH_X,-(policy.outputHeight-AvmLayout.GLYPH_Y-glyphH),policy.outputWidth,policy.outputHeight);
+      drawQuad(-AvmLayout.GLYPH_X,-(AvmLayout.SOURCE_HEIGHT-AvmLayout.GLYPH_Y-glyphH),AvmLayout.SOURCE_WIDTH,AvmLayout.SOURCE_HEIGHT);
       GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
       samplePixels.position(0);GLES20.glReadPixels(0,0,w,h,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,samplePixels);
       GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
