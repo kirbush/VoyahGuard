@@ -39,7 +39,7 @@ final class AvcRecorder {
 
   AvcRecorder(Context context,int width,int height,String cameraId,int segmentSeconds,Listener listener) throws Exception {
     this.context=context;this.listener=listener;segments=new SegmentPolicy(segmentSeconds);
-    store=new RecordingStore(context);store.ensureSpace(null);
+    store=new RecordingStore(context,session);store.ensureSpace(null);
     MediaCodec preparingCodec=null;Surface preparingSurface=null;
     try {
       MediaFormat format=MediaFormat.createVideoFormat("video/avc",width,height);

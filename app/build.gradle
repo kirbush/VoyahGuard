@@ -9,8 +9,8 @@ android {
         applicationId 'local.codex.voyahcameralab'
         minSdk 30
         targetSdk 30
-        versionCode 5
-        versionName '0.5-lite-alpha'
+        versionCode 6
+        versionName '0.5.1-lite-alpha'
         testApplicationId 'local.codex.voyahcameratest'
         testInstrumentationRunner 'local.codex.voyahcameratest.Smoke'
     }

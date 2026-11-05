@@ -36,21 +36,19 @@ public final class RecordingProvider extends ContentProvider {
   }
 
   @Override public String getType(Uri uri){
-    try{resolve(uri);return "video/mp4";}catch(FileNotFoundException failure){throw new IllegalArgumentException(failure);}
+    try{resolve(uri);return "video/mp4";}catch(FileNotFoundException failure){return null;}
   }
 
   @Override public Cursor query(Uri uri,String[] projection,String selection,String[] arguments,String order){
-    try {
-      File file=resolve(uri);
-      String[] columns=projection==null?new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE}:projection;
-      MatrixCursor result=new MatrixCursor(columns);Object[] row=new Object[columns.length];
-      for(int i=0;i<columns.length;i++){
-        if(OpenableColumns.DISPLAY_NAME.equals(columns[i]))row[i]=file.getName();
-        else if(OpenableColumns.SIZE.equals(columns[i]))row[i]=file.length();
-        else throw new IllegalArgumentException("Unsupported recording column");
-      }
-      result.addRow(row);return result;
-    }catch(FileNotFoundException failure){throw new IllegalArgumentException(failure);}
+    File file;
+    try{file=resolve(uri);}catch(FileNotFoundException failure){return null;}
+    String[] columns=StoragePolicy.knownColumns(projection,OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE);
+    MatrixCursor result=new MatrixCursor(columns);Object[] row=new Object[columns.length];
+    for(int i=0;i<columns.length;i++){
+      if(OpenableColumns.DISPLAY_NAME.equals(columns[i]))row[i]=file.getName();
+      else row[i]=file.length();
+    }
+    result.addRow(row);return result;
   }
 
   @Override public Uri insert(Uri uri,ContentValues values){throw new SecurityException("Recordings are read-only");}

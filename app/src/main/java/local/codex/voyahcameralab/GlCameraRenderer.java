@@ -5,6 +5,7 @@ import android.graphics.SurfaceTexture;
 import android.net.Uri;
 import android.opengl.*;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.Surface;
 import java.nio.*;
 
@@ -16,7 +17,7 @@ final class GlCameraRenderer {
   private final Surface displaySurface;private EGLDisplay display;private EGLContext eglContext;private EGLConfig config;
   private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;private Uri lastSaved;
   private final float[] transform=new float[16];private final FloatBuffer vertices;
-  private int program,texture,position,coordinates,matrix,vertical,rotation,width,height;private long frames;private boolean closed;
+  private int program,texture,position,coordinates,matrix,vertical,rotation,width,height;private long frames,lastReport;private boolean closed;
   GlCameraRenderer(Context context,Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
     this.context=context;this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
     displaySurface=new Surface(output);
@@ -66,8 +67,8 @@ final class GlCameraRenderer {
       makeCurrent(preview);cameraTexture.updateTexImage();cameraTexture.getTransformMatrix(transform);
       draw(width,height,true);if(!EGL14.eglSwapBuffers(display,preview))throw new IllegalStateException("Preview swap failed");
       if(recorder!=null){makeCurrent(encoder);draw(policy.outputWidth,policy.outputHeight,false);EGLExt.eglPresentationTimeANDROID(display,encoder,recorder.clock.next(System.nanoTime())*1000);if(!EGL14.eglSwapBuffers(display,encoder))throw new IllegalStateException("Encoder swap failed");recorder.drain(false);}
-      frames++;if(frames==1||frames==3||frames%30==0)listener.onFrame(frames);
-    }catch(Exception failure){String error="GPU/encoder: "+failure;if(recorder!=null)stopRecording(error);listener.onError(error);}
+      frames++;long now=SystemClock.elapsedRealtime();if(FrameHealth.reportDue(frames,now,lastReport)){lastReport=now;listener.onFrame(frames);}
+    }catch(Exception failure){String error=failure instanceof java.io.IOException?failure.getMessage():"GPU/encoder: "+failure;if(recorder!=null)stopRecording(error);listener.onError(error);}
   }
   boolean isRecording(){return recorder!=null;}
   void startRecording(String cameraId,int segmentSeconds) throws Exception {

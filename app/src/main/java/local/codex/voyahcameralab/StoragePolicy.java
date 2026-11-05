@@ -3,14 +3,19 @@ package local.codex.voyahcameralab;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Volume pressure and file ownership rules, independent of Android/media APIs. */
 final class StoragePolicy {
   static final long RESERVE_BYTES=128L*1024*1024;
+  /** Longer than the longest segment, so a fragment still being written is never taken. */
+  static final long ABANDONED_PART_MILLIS=15L*60*1000;
   private static final Pattern OWN_NAME=Pattern.compile("sentry-[0-9]{13,17}-[0-9a-f]{32}-[0-9]{6}\\.mp4");
+  private static final Pattern PART_NAME=Pattern.compile("sentry-[0-9]{13,17}-([0-9a-f]{32})-[0-9]{6}\\.mp4\\.part");
   interface SpaceProbe {long[] read() throws IOException;}
 
   static int percent(int value){return Math.max(50,Math.min(95,value));}
@@ -21,16 +26,31 @@ final class StoragePolicy {
     return Math.max(now,previous+1);
   }
 
-  static boolean hasSpace(long total,long available,int maximumPercent){
-    if(total<=0||available<0||available>total)return false;
+  private static long requiredBytes(long total,int maximumPercent){
     int freePercent=100-percent(maximumPercent);
     // ceil(total * freePercent / 100), without overflowing on large volumes.
-    long required=total/100*freePercent+(total%100*freePercent+99)/100;
-    return available>=Math.max(RESERVE_BYTES,required);
+    return Math.max(RESERVE_BYTES,total/100*freePercent+(total%100*freePercent+99)/100);
+  }
+
+  static boolean hasSpace(long total,long available,int maximumPercent){
+    if(total<=0||available<0||available>total)return false;
+    return available>=requiredBytes(total,maximumPercent);
+  }
+
+  /** Readers may ask for more than a clip can answer; drop those columns as FileProvider does. */
+  static String[] knownColumns(String[] requested,String... known){
+    if(requested==null)return known;
+    List<String> columns=new ArrayList<>();
+    for(String column:requested)if(Arrays.asList(known).contains(column))columns.add(column);
+    return columns.toArray(new String[0]);
   }
 
   static boolean isCompleted(File directory,File file){
-    if(file==null||!OWN_NAME.matcher(file.getName()).matches()||!file.isFile())return false;
+    return file!=null&&OWN_NAME.matcher(file.getName()).matches()&&isDirectChild(directory,file);
+  }
+
+  private static boolean isDirectChild(File directory,File file){
+    if(!file.isFile())return false;
     try {
       File root=directory.getCanonicalFile();
       File absolute=file.getAbsoluteFile();
@@ -49,7 +69,20 @@ final class StoragePolicy {
     return clips;
   }
 
-  static void ensureSpace(File directory,File protectedFile,SpaceProbe probe,boolean cycle,int maximumPercent) throws IOException {
+  /** Fragments interrupted in other sessions, oldest first. MediaMuxer writes no index before stop, so they cannot play. */
+  static List<File> abandonedParts(File directory,String session,long now) throws IOException {
+    File[] files=directory.listFiles();
+    if(files==null)throw new IOException("Recording directory unavailable");
+    List<File> parts=new ArrayList<>();
+    for(File file:files){
+      Matcher name=PART_NAME.matcher(file.getName());
+      if(name.matches()&&!name.group(1).equals(session)&&now-file.lastModified()>=ABANDONED_PART_MILLIS&&isDirectChild(directory,file))parts.add(file);
+    }
+    parts.sort(Comparator.comparing(File::getName));
+    return parts;
+  }
+
+  static void ensureSpace(File directory,File protectedFile,SpaceProbe probe,boolean cycle,int maximumPercent,String session,long now) throws IOException {
     long[] space=checkedSpace(probe);
     if(hasSpace(space[0],space[1],maximumPercent))return;
     if(!cycle)throw new IOException("Достигнут предел заполнения памяти; ролики сохранены без удаления");
@@ -57,10 +90,17 @@ final class StoragePolicy {
     File newest=clips.isEmpty()?null:clips.get(0);
     File protectedPath=protectedFile==null?null:protectedFile.getCanonicalFile();
     // A finite snapshot prevents repeated deletion of newly created/current segments.
+    List<File> candidates=new ArrayList<>(abandonedParts(directory,session,now));
     for(int i=clips.size()-1;i>=0;i--){
       File candidate=clips.get(i);
-      if(candidate.equals(newest)||candidate.getCanonicalFile().equals(protectedPath))continue;
-      if(!isCompleted(directory,candidate)||!candidate.delete())continue;
+      if(!candidate.equals(newest)&&!candidate.getCanonicalFile().equals(protectedPath))candidates.add(candidate);
+    }
+    long freeable=0;
+    for(File candidate:candidates)freeable+=candidate.length();
+    // Space taken by other apps must not cost the archive a deletion that cannot reach the target.
+    if(space[1]+freeable<requiredBytes(space[0],maximumPercent))throw new IOException("Недостаточно места: старые ролики приложения не освобождают нужный объём; они сохранены без удаления");
+    for(File candidate:candidates){
+      if(!isDirectChild(directory,candidate)||!candidate.delete())continue;
       space=checkedSpace(probe);
       if(hasSpace(space[0],space[1],maximumPercent))return;
     }

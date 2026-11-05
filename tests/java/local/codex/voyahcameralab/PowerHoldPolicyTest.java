@@ -195,6 +195,19 @@ public final class PowerHoldPolicyTest {
       try { PowerHoldPolicy.Snapshot.parse(malformed); } catch (IllegalArgumentException expected) { rejected = true; }
       check(rejected, "Malformed helper snapshot rejected");
     }
+    String journal = off().wire();
+    check(PowerHoldPolicy.journalExpired(journal, sample(0, 15, "", "Parking", 80, 0, "boot-b")),
+        "A journal from an earlier boot can be retired after a read-only status");
+    check(PowerHoldPolicy.journalExpired(journal, sample(1, 4, "on", "Parking", 80, 0, "boot-b")),
+        "Retiring needs no particular state: it writes nothing to the vehicle");
+    check(!PowerHoldPolicy.journalExpired(journal, sample(1, 4, "on", "Parking", 80, 0, "boot-a")),
+        "The same boot keeps the journal: another process may still own this hold");
+    check(!PowerHoldPolicy.journalExpired(journal, null), "No status never retires a journal");
+    check(!PowerHoldPolicy.journalExpired(journal, sample(0, 15, "", "Parking", 80, 0, "")),
+        "Unknown boot never retires a journal");
+    for (String unreadable : new String[]{null, "", "not-a-snapshot"})
+      check(!PowerHoldPolicy.journalExpired(unreadable, sample(0, 15, "", "Parking", 80, 0, "boot-b")),
+          "An unreadable journal stays visible instead of being cleared");
     try { controllerCoordination(); } catch (Exception failure) { throw new AssertionError(failure); }
     System.out.println("PASS: Power Hold policy (" + checks + " checks), no hardware actions");
   }
