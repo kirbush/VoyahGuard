@@ -23,7 +23,7 @@ final class PowerHoldController {
   private final SharedPreferences journal;
   private final String session = UUID.randomUUID().toString();
   private final PowerHoldPolicy.OwnershipGuard ownership = new PowerHoldPolicy.OwnershipGuard(session);
-  private volatile String cached = "Power Hold: выключен";
+  private volatile String cached = "Power Hold: штатное состояние не проверено";
   private volatile boolean owned;
   private volatile int releaseChecks;
   private boolean recovered, releaseStarted, releaseAttempted, leaseMatched, acquireFailed, cleanupSubmitted;
@@ -76,7 +76,7 @@ final class PowerHoldController {
       cached = recoveredWarning();
       return true;
     }
-    if (recovered && !pending) cached = "Power Hold: выключен";
+    if (recovered && !pending) cached = "Power Hold: штатное состояние не проверено";
     recovered = false;
     return false;
   }
