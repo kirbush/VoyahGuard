@@ -47,6 +47,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
 
   AdaptiveController(Context context, Listener listener) {
     this.context = context; this.listener = listener;
+    AvmViewControl.setApk(context.getApplicationInfo().sourceDir);
     analysisThread.start();
     analysis = new Handler(analysisThread.getLooper());
   }

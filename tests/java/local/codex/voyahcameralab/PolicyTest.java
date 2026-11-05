@@ -43,6 +43,9 @@ public final class PolicyTest {
     check(fit[0]==0&&fit[1]==18&&fit[2]==1000&&fit[3]==563,"Letterbox without distortion");
     int[] portraitFit=rotated.fit(1000,600);
     check(portraitFit[0]==331&&portraitFit[1]==0&&portraitFit[2]==338&&portraitFit[3]==600,"Portrait source is pillarboxed without distortion");
+    FramePolicy padded=FramePolicy.forCapture("1",1920,1200,0,true);
+    check(padded.paddingCorrected&&padded.anamorphic&&padded.outputHeight==720&&padded.cropBottom==0.4f,"Green padding crop keeps the same picture layout");
+    check(padded.fit(1760,720)[0]==-160&&padded.fit(1760,720)[5]==1760,"Green padding crop also hides the toolbar on screen");
     FramePolicy avm=FramePolicy.forCapture("1",1920,1200,0,false);
     check(avm.anamorphic&&avm.outputWidth==1920&&avm.outputHeight==720,"Recording stores the AVM frame in true 8:3 proportions");
     int[] avmFit=avm.fit(1760,720);

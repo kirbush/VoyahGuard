@@ -11,7 +11,8 @@ final class FramePolicy {
     boolean padding=correctionRequested&&knownProfile;
     // The full 1920×1200 AVM frame is authored for the 1920×720 screen: its pixels are 5:3 tall.
     // Measured on the car outline: 2.48:1 restored against 2.52:1 of the real body.
-    boolean anamorphic=!padding&&"1".equals(cameraId)&&width==1920&&height==1200&&rotation%360==0;
+    // The manual green-padding crop leaves the same 1920×720 picture, so everything else applies.
+    boolean anamorphic="1".equals(cameraId)&&width==1920&&rotation%360==0&&(padding||height==1200);
     return new FramePolicy(width,height,rotation,padding,anamorphic);
   }
   private FramePolicy(int width,int height,int rotation,boolean paddingCorrected,boolean anamorphic){

@@ -18,6 +18,7 @@ final class AvmViewControl {
   private static final long OPEN_PULSE_MS = 3000;
   private static final int AVM_OPEN = 1, AVM_CLOSE = 2, AVM_IDLE = 0;
   private static boolean loaded;
+  private static volatile String apk;
   private static String loadError;
 
   static {
@@ -26,6 +27,9 @@ final class AvmViewControl {
   }
 
   private static native int nativeTouch(int target, boolean pressed);
+
+  /** The bridge runs from this APK in its own app_process. */
+  static void setApk(String path) { apk = path; }
 
   /** Empty when supported, otherwise a reason for the owner. */
   static String unavailableReason() {
@@ -74,9 +78,13 @@ final class AvmViewControl {
     return sent;
   }
 
+  /** The direct call needs WRITE_CANBUS, which only VoyahTweaks declares; otherwise the bridge carries it. */
   private static boolean request(int value) {
     String reply = run("/system/bin/service", "call", "qg.canbus", "58", "i32", "1", "i32", "838", "i32", "1055", "i32", String.valueOf(value));
-    return reply.contains("Parcel(00000000");
+    if (reply.contains("Parcel(00000000")) return true;
+    if (apk == null || apk.indexOf(':') >= 0) return false;
+    return run("/system/bin/app_process", "-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH,
+        "/system/bin", "local.codex.voyahcameralab.AvmBridge", String.valueOf(value)).contains(AvmBridge.DONE);
   }
 
   private static String run(String... command) {
