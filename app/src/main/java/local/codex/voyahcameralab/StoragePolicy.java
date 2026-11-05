@@ -2,21 +2,26 @@ package local.codex.voyahcameralab;
 
 import java.io.File;
 import java.io.IOException;
+import java.text.ParsePosition;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
-import java.util.regex.Matcher;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
-/** Volume pressure and file ownership rules, independent of Android/media APIs. */
+/** Volume pressure and naming rules, independent of Android/media APIs. */
 final class StoragePolicy {
   static final long RESERVE_BYTES=128L*1024*1024;
-  /** Longer than the longest segment, so a fragment still being written is never taken. */
-  static final long ABANDONED_PART_MILLIS=15L*60*1000;
-  private static final Pattern OWN_NAME=Pattern.compile("sentry-[0-9]{13,17}-[0-9a-f]{32}-[0-9]{6}\\.mp4");
-  private static final Pattern PART_NAME=Pattern.compile("sentry-[0-9]{13,17}-([0-9a-f]{32})-[0-9]{6}\\.mp4\\.part");
+  static final String EVENT_SUFFIX="_event";
+  private static final String VIDEO_TIME="yyyy-MM-dd_HH-mm-ss";
+  private static final Pattern CHUNK=Pattern.compile("[0-9]{13}-[0-9]{6}\\.mp4");
+  private static final Pattern SESSION=Pattern.compile("[0-9a-f]{32}");
+  private static final Pattern LEGACY=Pattern.compile("sentry-[0-9]{13,17}-[0-9a-f]{32}-[0-9]{6}\\.mp4");
   interface SpaceProbe {long[] read() throws IOException;}
+  /** Something storage pressure may take, in the order given. */
+  interface Reclaimable {long bytes();boolean reclaim() throws IOException;}
 
   static int percent(int value){return Math.max(50,Math.min(95,value));}
 
@@ -26,7 +31,7 @@ final class StoragePolicy {
     return Math.max(now,previous+1);
   }
 
-  private static long requiredBytes(long total,int maximumPercent){
+  static long requiredBytes(long total,int maximumPercent){
     int freePercent=100-percent(maximumPercent);
     // ceil(total * freePercent / 100), without overflowing on large volumes.
     return Math.max(RESERVE_BYTES,total/100*freePercent+(total%100*freePercent+99)/100);
@@ -37,74 +42,60 @@ final class StoragePolicy {
     return available>=requiredBytes(total,maximumPercent);
   }
 
-  /** Readers may ask for more than a clip can answer; drop those columns as FileProvider does. */
-  static String[] knownColumns(String[] requested,String... known){
-    if(requested==null)return known;
-    List<String> columns=new ArrayList<>();
-    for(String column:requested)if(Arrays.asList(known).contains(column))columns.add(column);
-    return columns.toArray(new String[0]);
+  static boolean isSession(String name){return SESSION.matcher(name).matches();}
+  static boolean isChunk(String name){return CHUNK.matcher(name).matches();}
+  static String chunkName(long wallMs,int sequence){return String.format(Locale.ROOT,"%013d-%06d.mp4",wallMs,sequence);}
+  static long chunkWall(String name){return Long.parseLong(name.substring(0,13));}
+  /** Files of the releases that kept one-minute clips in the app folder. */
+  static boolean isLegacy(String name){return LEGACY.matcher(name).matches();}
+  static String legacySession(String name){return name.split("-")[2];}
+  static long legacyWall(String name){return Long.parseLong(name.split("-")[1]);}
+
+  /** When the footage of a chunk or an old clip began. */
+  static long wallOf(String name,long fallback){return isChunk(name)?chunkWall(name):isLegacy(name)?legacyWall(name):fallback;}
+
+  /** Sorts by time in any file manager, and an event is visible from the name alone. */
+  static String videoName(long wallMs,boolean event){
+    return new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).format(new Date(wallMs))+(event?EVENT_SUFFIX:"")+".mp4";
+  }
+  static long videoWall(String name,long fallback){
+    Date time=new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).parse(name,new ParsePosition(0));
+    return time==null?fallback:time.getTime();
+  }
+  static boolean isEvent(String name){return name.endsWith(EVENT_SUFFIX+".mp4");}
+
+  /** Oldest footage goes first, footage without an event before any event. */
+  static List<Reclaimable> reclaimOrder(List<? extends Reclaimable> oldRecords,List<? extends Reclaimable> runningRecord,List<? extends Reclaimable> oldEvents,List<? extends Reclaimable> runningEvent){
+    List<Reclaimable> order=new ArrayList<>(oldRecords);
+    order.addAll(runningRecord);order.addAll(oldEvents);order.addAll(runningEvent);
+    return order;
   }
 
-  static boolean isCompleted(File directory,File file){
-    return file!=null&&OWN_NAME.matcher(file.getName()).matches()&&isDirectChild(directory,file);
-  }
-
-  private static boolean isDirectChild(File directory,File file){
-    if(!file.isFile())return false;
-    try {
-      File root=directory.getCanonicalFile();
-      File absolute=file.getAbsoluteFile();
-      // Reject every symlink, even one pointing to another file inside this directory.
-      return root.equals(absolute.getParentFile().getCanonicalFile())
-          &&new File(root,file.getName()).equals(file.getCanonicalFile());
-    }catch(IOException failure){return false;}
-  }
-
-  static List<File> completedFiles(File directory) throws IOException {
-    File[] files=directory.listFiles();
-    if(files==null)throw new IOException("Recording directory unavailable");
-    List<File> clips=new ArrayList<>();
-    for(File file:files)if(isCompleted(directory,file))clips.add(file);
-    clips.sort(Comparator.comparing(File::getName).reversed());
-    return clips;
-  }
-
-  /** Fragments interrupted in other sessions, oldest first. MediaMuxer writes no index before stop, so they cannot play. */
-  static List<File> abandonedParts(File directory,String session,long now) throws IOException {
-    File[] files=directory.listFiles();
-    if(files==null)throw new IOException("Recording directory unavailable");
-    List<File> parts=new ArrayList<>();
-    for(File file:files){
-      Matcher name=PART_NAME.matcher(file.getName());
-      if(name.matches()&&!name.group(1).equals(session)&&now-file.lastModified()>=ABANDONED_PART_MILLIS&&isDirectChild(directory,file))parts.add(file);
-    }
-    parts.sort(Comparator.comparing(File::getName));
-    return parts;
-  }
-
-  static void ensureSpace(File directory,File protectedFile,SpaceProbe probe,boolean cycle,int maximumPercent,String session,long now) throws IOException {
+  static void ensureSpace(SpaceProbe probe,boolean cycle,int maximumPercent,List<? extends Reclaimable> candidates) throws IOException {
     long[] space=checkedSpace(probe);
     if(hasSpace(space[0],space[1],maximumPercent))return;
-    if(!cycle)throw new IOException("Достигнут предел заполнения памяти; ролики сохранены без удаления");
-    List<File> clips=completedFiles(directory);
-    File newest=clips.isEmpty()?null:clips.get(0);
-    File protectedPath=protectedFile==null?null:protectedFile.getCanonicalFile();
-    // A finite snapshot prevents repeated deletion of newly created/current segments.
-    List<File> candidates=new ArrayList<>(abandonedParts(directory,session,now));
-    for(int i=clips.size()-1;i>=0;i--){
-      File candidate=clips.get(i);
-      if(!candidate.equals(newest)&&!candidate.getCanonicalFile().equals(protectedPath))candidates.add(candidate);
-    }
+    if(!cycle)throw new IOException("Достигнут предел заполнения памяти; видео сохранены без удаления");
     long freeable=0;
-    for(File candidate:candidates)freeable+=candidate.length();
+    for(Reclaimable candidate:candidates)freeable+=candidate.bytes();
     // Space taken by other apps must not cost the archive a deletion that cannot reach the target.
-    if(space[1]+freeable<requiredBytes(space[0],maximumPercent))throw new IOException("Недостаточно места: старые ролики приложения не освобождают нужный объём; они сохранены без удаления");
-    for(File candidate:candidates){
-      if(!isDirectChild(directory,candidate)||!candidate.delete())continue;
+    if(space[1]+freeable<requiredBytes(space[0],maximumPercent))throw new IOException("Недостаточно места: видео приложения не освобождают нужный объём; они сохранены без удаления");
+    for(Reclaimable candidate:candidates){
+      if(!candidate.reclaim())continue;
       space=checkedSpace(probe);
       if(hasSpace(space[0],space[1],maximumPercent))return;
     }
-    throw new IOException("Недостаточно места: старые ролики приложения не освобождают нужный объём");
+    throw new IOException("Недостаточно места: видео приложения не освобождают нужный объём");
+  }
+
+  /** Chunks of one session in recording order. */
+  static List<File> chunks(File directory) throws IOException {
+    File[] files=directory.listFiles();
+    if(files==null)throw new IOException("Recording directory unavailable");
+    List<File> chunks=new ArrayList<>();
+    for(File file:files)if(file.isFile()&&isChunk(file.getName()))chunks.add(file);
+    File[] sorted=chunks.toArray(new File[0]);
+    Arrays.sort(sorted);
+    return new ArrayList<>(Arrays.asList(sorted));
   }
 
   private static long[] checkedSpace(SpaceProbe probe) throws IOException {

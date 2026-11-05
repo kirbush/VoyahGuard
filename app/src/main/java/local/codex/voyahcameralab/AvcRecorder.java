@@ -1,45 +1,35 @@
 package local.codex.voyahcameralab;
 
-import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.view.Surface;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-/** One surface encoder per session; MP4 muxers rotate without restarting capture. */
+/** One surface encoder per recording; hidden chunks rotate without restarting capture. */
 final class AvcRecorder {
-  interface Listener {void onSegmentSaved(Uri uri);}
   final Surface input;
   final TimestampClock clock;
-  private final Context context;
   private final MediaCodec codec;
-  private final RecordingStore store;
-  private final SegmentPolicy segments;
-  private final Listener listener;
-  private final String session=RecordingStore.newSession();
+  private final VideoSession session;
+  private final SegmentPolicy segments=new SegmentPolicy(SegmentPolicy.CHUNK_SECONDS);
   private final MediaCodec.BufferInfo info=new MediaCodec.BufferInfo();
   private MediaFormat outputFormat;
   private MediaMuxer muxer;
-  private RecordingStore.Pending pending;
-  private Uri lastSaved;
-  private int track=-1,samples,sequence;
+  private File pending;
+  private long pendingStart;
+  private int track=-1,samples,chunks;
   private boolean muxerStarted,closed,finishing,eosSignaled,segmentDamaged;
   private Exception recordingFailure;
   private long nextStorageCheck;
 
-  AvcRecorder(Context context,int width,int height,String cameraId) throws Exception {
-    this(context,width,height,cameraId,60,null);
-  }
-
-  AvcRecorder(Context context,int width,int height,String cameraId,int segmentSeconds,Listener listener) throws Exception {
-    this.context=context;this.listener=listener;segments=new SegmentPolicy(segmentSeconds);
-    store=new RecordingStore(context,session);store.ensureSpace(null);
+  AvcRecorder(VideoSession session,int width,int height) throws Exception {
+    this.session=session;
     MediaCodec preparingCodec=null;Surface preparingSurface=null;
     try {
       MediaFormat format=MediaFormat.createVideoFormat("video/avc",width,height);
@@ -66,7 +56,7 @@ final class AvcRecorder {
     try {
       if(!finishing&&recordingFailure!=null)throw recordingFailure;
       if(!end&&SystemClock.elapsedRealtime()>=nextStorageCheck){
-        nextStorageCheck=SystemClock.elapsedRealtime()+1000;store.checkDuringCapture();
+        nextStorageCheck=SystemClock.elapsedRealtime()+1000;session.checkSpace();
       }
       if(end&&!eosSignaled){codec.signalEndOfInputStream();eosSignaled=true;}
       long deadline=SystemClock.elapsedRealtime()+2500;
@@ -103,9 +93,9 @@ final class AvcRecorder {
     }
     if(!segments.accepts(keyframe))return;
     if(muxer==null){
-      pending=store.createPending(session,++sequence);
+      pending=session.newChunk();pendingStart=SystemClock.elapsedRealtime();
       try {
-        muxer=new MediaMuxer(pending.file.getPath(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        muxer=new MediaMuxer(pending.getPath(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
         track=muxer.addTrack(outputFormat);muxer.start();muxerStarted=true;
       }catch(Exception failure){segmentDamaged=true;throw failure;}
     }
@@ -116,9 +106,9 @@ final class AvcRecorder {
     catch(Exception failure){segmentDamaged=true;throw failure;}
   }
 
-  /** Publish only after a successful stop and release. */
+  /** Hand over only after a successful stop and release. */
   private void closeSegment() throws Exception {
-    MediaMuxer closing=muxer;RecordingStore.Pending closingFile=pending;
+    MediaMuxer closing=muxer;File closingFile=pending;
     boolean started=muxerStarted,valid=!segmentDamaged&&samples>0;
     muxer=null;pending=null;muxerStarted=false;segmentDamaged=false;samples=0;track=-1;
     Exception error=null;
@@ -127,14 +117,13 @@ final class AvcRecorder {
       try{closing.release();}catch(Exception failure){error=merge(error,failure);}
     }
     if(closingFile==null){if(error!=null)throw error;return;}
-    if(error!=null||!valid){store.discard(closingFile);if(error!=null)throw error;return;}
-    try{lastSaved=RecordingStore.uri(context,store.complete(closingFile));}
-    catch(Exception failure){store.discard(closingFile);throw failure;}
-    if(listener!=null)listener.onSegmentSaved(lastSaved);
+    if(error!=null||!valid){session.discard(closingFile);if(error!=null)throw error;return;}
+    try{session.chunk(closingFile,pendingStart,SystemClock.elapsedRealtime());chunks++;}
+    catch(Exception failure){session.discard(closingFile);throw failure;}
   }
 
-  Uri finish() throws Exception {
-    if(closed)return lastSaved;
+  void finish() throws Exception {
+    if(closed)return;
     closed=true;finishing=true;segments.finish();Exception error=recordingFailure;
     try{drain(true);}catch(Exception failure){error=merge(error,failure);}
     try{closeSegment();}catch(Exception failure){error=merge(error,failure);}
@@ -142,9 +131,9 @@ final class AvcRecorder {
     try{codec.stop();}catch(Exception failure){error=merge(error,failure);}
     try{codec.release();}catch(Exception failure){error=merge(error,failure);}
     try{input.release();}catch(Exception failure){error=merge(error,failure);}
+    session.finish();
     if(error!=null)throw error;
-    if(lastSaved==null)throw new IOException("Запись не содержит закодированных кадров");
-    return lastSaved;
+    if(chunks==0)throw new IOException("Запись не содержит закодированных кадров");
   }
 
   private static Exception merge(Exception first,Exception next){

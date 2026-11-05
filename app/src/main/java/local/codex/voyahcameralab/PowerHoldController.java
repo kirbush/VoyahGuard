@@ -29,7 +29,18 @@ final class PowerHoldController {
   private boolean recovered, releaseStarted, releaseAttempted, leaseMatched, acquireFailed, cleanupSubmitted;
   private PowerHoldPolicy.Lease lease;
 
-  PowerHoldController(Context context) {
+  private static PowerHoldController shared;
+
+  /**
+   * One per process: a release may wait minutes for a video, and an activity opened meanwhile
+   * must see the same lease instead of a journal it does not own.
+   */
+  static synchronized PowerHoldController shared(Context context) {
+    if (shared == null) shared = new PowerHoldController(context);
+    return shared;
+  }
+
+  private PowerHoldController(Context context) {
     Context application = context.getApplicationContext();
     this.context = application == null ? context : application;
     journal = this.context.getSharedPreferences("sentry_power_hold_ownership", Context.MODE_PRIVATE);
