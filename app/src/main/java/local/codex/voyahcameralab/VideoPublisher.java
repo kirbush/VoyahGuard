@@ -13,6 +13,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,8 +26,9 @@ import java.util.function.Consumer;
 
 /**
  * Joins chunks into one MP4 without re-encoding. Runs on one thread for the whole process, so a
- * video started before the activity went away still finishes. A run killed halfway leaves its
- * chunks behind, and the next start joins them.
+ * video started before the activity went away still finishes. A source goes only after the video
+ * holding its frames is published: a run killed or failed halfway leaves its chunks behind, and
+ * the next start joins them.
  */
 final class VideoPublisher {
   private static final String TAG = "SentryVideo";
@@ -59,31 +61,42 @@ final class VideoPublisher {
   /** Runs after every video queued so far: a hold must outlast the file it protects. */
   static void afterPending(Runnable work) { JOBS.execute(work); }
 
-  /** Joins and removes the chunks. Failed chunks stay on disk for the next start. */
-  static Uri join(RecordingStore store, List<File> parts, long wallMs, boolean event) throws IOException {
-    long bytes = 0;
-    for (File part : parts) bytes += part.length();
-    // Without room for a second copy each chunk goes as soon as it is in, at the cost of a video
-    // that a crash here would lose.
-    boolean consume = !store.canHoldCopy(bytes);
+  /** One video, or several in a row when a single copy does not fit on the volume. */
+  static void join(RecordingStore store, List<File> parts, boolean event, Consumer<Uri> saved) throws IOException {
+    int from = 0;
+    while (from < parts.size()) {
+      long room = store.roomForCopy(), bytes = 0;
+      int to = from;
+      while (to < parts.size() && (to == from || bytes + parts.get(to).length() <= room)) bytes += parts.get(to++).length();
+      saved.accept(publish(store, new ArrayList<>(parts.subList(from, to)), event));
+      from = to;
+    }
+  }
+
+  private static Uri publish(RecordingStore store, List<File> parts, boolean event) throws IOException {
+    File first = parts.get(0);
+    long wallMs = StoragePolicy.wallOf(first.getName(), first.lastModified());
     Uri uri = store.createPending(StoragePolicy.videoName(wallMs, event), wallMs);
-    try (ParcelFileDescriptor file = store.openPending(uri)) {
-      join(parts, file.getFileDescriptor(), consume);
+    List<File> joined;
+    try {
+      try (ParcelFileDescriptor file = store.openPending(uri)) { joined = join(parts, file.getFileDescriptor()); }
+      store.publishPending(uri);
     } catch (IOException | RuntimeException failure) {
       store.discardPending(uri);
       throw failure instanceof IOException ? (IOException) failure : new IOException("Не удалось собрать видео", failure);
     }
-    store.publishPending(uri);
-    for (File part : parts) part.delete();
+    for (File part : joined) part.delete();
     return uri;
   }
 
-  private static void join(List<File> parts, FileDescriptor target, boolean consume) throws IOException {
+  /** @return the parts whose frames are in the video: a skipped one stays for the next start */
+  private static List<File> join(List<File> parts, FileDescriptor target) throws IOException {
     MediaMuxer muxer = new MediaMuxer(target, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
     ByteBuffer buffer = ByteBuffer.allocateDirect(SAMPLE_BYTES);
     MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     int track = -1;
-    long offset = 0, samples = 0;
+    long offset = 0;
+    List<File> joined = new ArrayList<>();
     try {
       for (File part : parts) {
         MediaExtractor source = new MediaExtractor();
@@ -99,7 +112,6 @@ final class VideoPublisher {
             boolean key = (source.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0;
             info.set(0, size, offset + time, key ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
             muxer.writeSampleData(track, buffer, info);
-            samples++;
             if (last >= 0 && time > last) frame = time - last;
             last = Math.max(last, time);
           }
@@ -108,11 +120,11 @@ final class VideoPublisher {
         } finally {
           source.release();
         }
-        if (last >= 0) offset += last + frame;
-        if (consume) part.delete();
+        if (last >= 0) { offset += last + frame; joined.add(part); }
       }
-      if (samples == 0) throw new IOException("Запись не содержит кадров");
+      if (joined.isEmpty()) throw new IOException("Запись не содержит кадров");
       muxer.stop();
+      return joined;
     } finally {
       muxer.release();
     }
@@ -143,7 +155,7 @@ final class VideoPublisher {
     if (!StoragePolicy.isSession(session.getName())) return;
     try {
       List<File> chunks = StoragePolicy.chunks(session);
-      if (!chunks.isEmpty()) saved.accept(join(store, chunks, StoragePolicy.chunkWall(chunks.get(0).getName()), false));
+      if (!chunks.isEmpty()) join(store, chunks, false, saved);
       removeLeftovers(session);
     } catch (IOException failure) { Log.w(TAG, "Recovery of " + session.getName(), failure); }
   }
@@ -164,10 +176,11 @@ final class VideoPublisher {
       if (StoragePolicy.isLegacy(name)) sessions.computeIfAbsent(StoragePolicy.legacySession(name), key -> new ArrayList<>()).add(file);
       else if (name.endsWith(".mp4.part")) file.delete(); // MediaMuxer writes no index before stop: it never plays.
     }
-    for (List<File> clips : sessions.values()) {
-      clips.sort((a, b) -> Long.compare(StoragePolicy.legacyWall(a.getName()), StoragePolicy.legacyWall(b.getName())));
-      saved.accept(join(store, clips, StoragePolicy.legacyWall(clips.get(0).getName()), false));
-    }
+    Comparator<File> byTime = Comparator.comparingLong(clip -> StoragePolicy.legacyWall(clip.getName()));
+    List<List<File>> ordered = new ArrayList<>(sessions.values());
+    for (List<File> clips : ordered) clips.sort(byTime);
+    ordered.sort((a, b) -> byTime.compare(a.get(0), b.get(0)));
+    for (List<File> clips : ordered) join(store, clips, false, saved);
     folder.delete();
   }
 }

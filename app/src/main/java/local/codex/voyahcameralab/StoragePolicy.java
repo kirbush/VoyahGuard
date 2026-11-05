@@ -2,6 +2,7 @@ package local.codex.voyahcameralab;
 
 import java.io.File;
 import java.io.IOException;
+import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -14,6 +15,7 @@ import java.util.regex.Pattern;
 final class StoragePolicy {
   static final long RESERVE_BYTES=128L*1024*1024;
   static final String EVENT_SUFFIX="_event";
+  private static final String VIDEO_TIME="yyyy-MM-dd_HH-mm-ss";
   private static final Pattern CHUNK=Pattern.compile("[0-9]{13}-[0-9]{6}\\.mp4");
   private static final Pattern SESSION=Pattern.compile("[0-9a-f]{32}");
   private static final Pattern LEGACY=Pattern.compile("sentry-[0-9]{13,17}-[0-9a-f]{32}-[0-9]{6}\\.mp4");
@@ -49,9 +51,16 @@ final class StoragePolicy {
   static String legacySession(String name){return name.split("-")[2];}
   static long legacyWall(String name){return Long.parseLong(name.split("-")[1]);}
 
+  /** When the footage of a chunk or an old clip began. */
+  static long wallOf(String name,long fallback){return isChunk(name)?chunkWall(name):isLegacy(name)?legacyWall(name):fallback;}
+
   /** Sorts by time in any file manager, and an event is visible from the name alone. */
   static String videoName(long wallMs,boolean event){
-    return new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss",Locale.ROOT).format(new Date(wallMs))+(event?EVENT_SUFFIX:"")+".mp4";
+    return new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).format(new Date(wallMs))+(event?EVENT_SUFFIX:"")+".mp4";
+  }
+  static long videoWall(String name,long fallback){
+    Date time=new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).parse(name,new ParsePosition(0));
+    return time==null?fallback:time.getTime();
   }
   static boolean isEvent(String name){return name.endsWith(EVENT_SUFFIX+".mp4");}
 

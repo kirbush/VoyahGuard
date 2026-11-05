@@ -46,7 +46,7 @@ final class RecordingStore {
     Video(ContentResolver resolver,Uri uri,String name,long size,long wallMs){this.resolver=resolver;this.uri=uri;this.name=name;this.size=size;this.wallMs=wallMs;}
     boolean event(){return StoragePolicy.isEvent(name);}
     @Override public long bytes(){return size;}
-    @Override public boolean reclaim(){return resolver.delete(uri,null,null)>0;}
+    @Override public boolean reclaim(){try{return resolver.delete(uri,null,null)>0;}catch(RuntimeException failure){return false;}}
   }
 
   RecordingStore(Context context) throws IOException {
@@ -78,9 +78,12 @@ final class RecordingStore {
       if(rows==null)throw new IOException("Список видео недоступен");
       while(rows.moveToNext()){
         long taken=rows.isNull(3)?0:rows.getLong(3);
-        videos.add(new Video(resolver,ContentUris.withAppendedId(collection(),rows.getLong(0)),rows.getString(1),rows.getLong(2),taken>0?taken:rows.getLong(4)*1000));
+        String name=rows.getString(1);
+        // The name holds the time of the footage; the scanner and a late join may move the columns.
+        videos.add(new Video(resolver,ContentUris.withAppendedId(collection(),rows.getLong(0)),name,rows.getLong(2),StoragePolicy.videoWall(name,taken>0?taken:rows.getLong(4)*1000)));
       }
     }catch(RuntimeException failure){throw new IOException("Список видео недоступен",failure);}
+    videos.sort((a,b)->Long.compare(b.wallMs,a.wallMs));
     return videos;
   }
 
@@ -90,10 +93,8 @@ final class RecordingStore {
     return new Snapshot(space[0],space[1],bytes,videos.size());
   }
 
-  boolean canHoldCopy(long bytes) throws IOException {
-    long[] space=space();
-    return StoragePolicy.hasSpace(space[0],space[1]-bytes,maximumPercent());
-  }
+  /** A join copies before it deletes, so it needs real room, not room under the owner's limit. */
+  long roomForCopy() throws IOException {return space()[1]-StoragePolicy.RESERVE_BYTES;}
 
   /**
    * Under pressure footage without events goes first, then events, oldest first in both. The

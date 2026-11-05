@@ -55,19 +55,20 @@ final class ScreenControl implements ServiceConnection {
   /** Opening the 360 screen raises the brightness again, so this is repeated. */
   void keepDark() { backlight(LOWEST); }
 
-  void restore() {
+  /** @return false when the driver's screen may still be dim: the caller tries again */
+  boolean restore() {
     power(EXIT_OFF, PASSENGER);
     power(EXIT_OFF, DRIVER);
-    backlight(END_OVERRIDE);
+    return backlight(END_OVERRIDE);
   }
 
   private static void power(String transaction, String screen) {
     AvmViewControl.run("/system/bin/service", "call", "qg.power_manager", transaction, "i32", screen);
   }
 
-  private void backlight(int level) {
+  private boolean backlight(int level) {
     IBinder target = policy;
-    if (target == null) return;
+    if (target == null) return false;
     Parcel data = Parcel.obtain(), reply = Parcel.obtain();
     try {
       data.writeInterfaceToken(POLICY);
@@ -77,8 +78,10 @@ final class ScreenControl implements ServiceConnection {
       data.writeInt(0); // No high-temperature handling: the OEM keeps its own limit.
       target.transact(SET_BACKLIGHT, data, reply, 0);
       reply.readException();
+      return true; // The call reports false for this override even when it is applied.
     } catch (Exception failure) {
       Log.w(TAG, "Backlight", failure);
+      return false;
     } finally {
       data.recycle();
       reply.recycle();

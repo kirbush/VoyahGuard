@@ -27,7 +27,8 @@ public final class ParkedPolicyTest {
     check(off.update(reading(false, false, false), false, true).equals(NOTHING), "So it is not switched on later");
 
     ParkedPolicy care = new ParkedPolicy();
-    check(care.update(reading(true, true, true), false, true).equals(NOTHING), "Camp and care modes keep the climate");
+    check(care.update(reading(true, true, true), true, true).equals(NOTHING), "Camp and care modes keep the climate and the screens");
+    check(!ParkedPolicy.guarded(reading(true, true, true)) && !ParkedPolicy.guarded(null) && ParkedPolicy.guarded(reading(true, false, false)), "Somebody may be inside: no guarding, so no voice");
     care.update(reading(true, true, false), false, true);
     check(care.update(reading(true, false, true), false, true).equals(Arrays.asList(ParkedPolicy.Action.CLIMATE_ON)), "Care mode turned on later gets it back");
 

@@ -51,6 +51,9 @@ public final class StoragePolicyTest {
     check(!StoragePolicy.isLegacy("family.mp4"),"A foreign file is never migrated");
     String event=StoragePolicy.videoName(1762000000000L,true),plain=StoragePolicy.videoName(1762000000000L,false);
     check(StoragePolicy.isEvent(event)&&!StoragePolicy.isEvent(plain),"An event is visible from the name");
+    check(StoragePolicy.videoWall(event,0)==1762000000000L&&StoragePolicy.videoWall(plain,0)==1762000000000L,"The name gives the time of the footage back");
+    check(StoragePolicy.videoWall("holiday.mp4",7)==7,"A foreign name keeps the stored time");
+    check(StoragePolicy.wallOf(StoragePolicy.chunkName(1762000000000L,3),7)==1762000000000L&&StoragePolicy.wallOf(legacy,7)==1762000000000L&&StoragePolicy.wallOf("x",7)==7,"Sources carry their start time");
     check(plain.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}\\.mp4"),"Names sort by time");
     space();
     System.out.println("PASS: storage thresholds, physical reserve, invalid statistics and overflow");

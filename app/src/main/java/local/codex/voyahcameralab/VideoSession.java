@@ -16,6 +16,8 @@ import java.util.function.Consumer;
 final class VideoSession {
   private static final String TAG = "SentryVideo";
   private static final ExecutorService SPACE = Executors.newSingleThreadExecutor();
+  /** How long after the start of a recording the detector may take to begin. */
+  private static final long DETECTOR_START_MS = 10000;
 
   private final RecordingStore store;
   private final File directory;
@@ -51,9 +53,8 @@ final class VideoSession {
   synchronized void chunk(File part, long startMs, long endMs) throws IOException {
     File finished = new File(directory, part.getName().substring(0, part.getName().length() - ".part".length()));
     if (!part.renameTo(finished)) throw new IOException("Не удалось завершить файл записи");
-    // The detector needs a few seconds after the start of a recording: the first chunk may have them.
     boolean first = ++closed == 1;
-    boolean watched = watchedSince >= 0 && (first || watchedSince <= startMs);
+    boolean watched = watchedSince >= 0 && watchedSince <= startMs + (first ? DETECTOR_START_MS : 0);
     apply(timeline.chunk(new VideoTimeline.Chunk(finished, startMs, endMs, StoragePolicy.chunkWall(finished.getName()), finished.length(), watched)));
   }
 
@@ -73,9 +74,10 @@ final class VideoSession {
     VideoPublisher.submit(() -> removeDirectory());
   }
 
+  /** Finished chunks still here failed to join: they stay, and the next start tries again. */
   private void removeDirectory() {
     File[] files = directory.listFiles();
-    if (files != null) for (File file : files) file.delete();
+    if (files != null) for (File file : files) if (file.getName().endsWith(".part")) file.delete();
     if (directory.delete()) Log.d(TAG, "Session done: " + session);
   }
 
@@ -88,17 +90,9 @@ final class VideoSession {
     VideoPublisher.submit(() -> {
       List<File> parts = new ArrayList<>();
       for (VideoTimeline.Chunk chunk : video.chunks) parts.add(chunk.file);
-      try { saved.accept(VideoPublisher.join(store, parts, video.wallMs(), video.kind == VideoTimeline.Kind.EVENT)); }
-      catch (IOException failure) { Log.w(TAG, "Video not joined, chunks kept", failure); keepForRecovery(parts); }
+      try { VideoPublisher.join(store, parts, video.kind == VideoTimeline.Kind.EVENT, saved); }
+      catch (IOException failure) { Log.w(TAG, "Video not joined, chunks kept", failure); }
     });
-  }
-
-  /** A failed join moves its chunks out of this session's way: the next start retries them. */
-  private void keepForRecovery(List<File> parts) {
-    try {
-      File later = store.sessionDirectory(RecordingStore.newSession());
-      for (File part : parts) part.renameTo(new File(later, part.getName()));
-    } catch (IOException failure) { Log.w(TAG, "Chunks stay in place", failure); }
   }
 
   /** Space is checked beside the encoder: deleting a video must not delay a frame. */
@@ -109,6 +103,7 @@ final class VideoSession {
     SPACE.execute(() -> {
       try { store.ensureSpace(this); }
       catch (IOException error) { spaceFailure = error; }
+      catch (RuntimeException error) { Log.w(TAG, "Space check", error); } // MediaStore must not end the recording.
       finally { spaceCheck.set(false); }
     });
   }

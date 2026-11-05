@@ -75,7 +75,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     if (!wanted) return;
     wanted = false; active = false; detecting = false;
     generation++;
-    listener.onWatching(false, SystemClock.elapsedRealtime());
+    distrust();
     analysis.post(this::finishRun);
     boolean wasThreeD = threeD;
     int back = home;
@@ -132,6 +132,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     openLog();
     detecting = true;
     if (follow) { active = true; publish("Адаптивный вид: определение ракурса"); }
+    if (run != generation) { active = false; detecting = false; } // stop() ran while this was starting
   }
 
   private void finishRun() {
@@ -223,9 +224,12 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     if (run != generation) return;
     active = false; halted = true;
     if (!keepDetecting) detecting = false;
-    listener.onWatching(false, SystemClock.elapsedRealtime());
+    distrust();
     publish("Адаптивный вид остановлен: " + reason);
   }
+
+  /** On the analysis thread, so a sample in progress cannot report trust after this. */
+  private void distrust() { analysis.post(() -> listener.onWatching(false, SystemClock.elapsedRealtime())); }
 
   private static String reason(AdaptiveViewPolicy.Stop stop) {
     switch (stop) {
