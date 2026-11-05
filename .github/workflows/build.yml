@@ -22,7 +22,7 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - name: Install SDK
-        run: sdkmanager 'platforms;android-30' 'build-tools;35.0.0'
+        run: sdkmanager 'platforms;android-30' 'build-tools;35.0.0' 'ndk;27.2.12479018'
       - name: Build and run core checks
         run: ./gradlew :app:corePolicyTest :app:assembleDebug :app:assembleDebugAndroidTest :app:assembleRelease :app:lintRelease --no-daemon
       - uses: actions/upload-artifact@v4

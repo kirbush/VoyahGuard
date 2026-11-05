@@ -25,6 +25,10 @@ public final class PowerHoldBridge {
   private static final String VEHICLE_BASELINE = "c245e689da80b8842c07f367362109ad4b12fe74642bcfe364d151bef9262040";
   private static final String SERVICE_BASELINE = "96ac5182e795ad70c43c78f26b9cf29e76b59db67c2d5c09216ba1d8425c427c";
 
+  /** Exit code of a run that certainly wrote nothing, so the caller may safely try again. */
+  static final int NOT_SENT = 3;
+  private static volatile boolean writeAttempted;
+
   private final Object service, switchState, timeState, warningState, socState;
   private final Method getter, gearGetter, bundleSetter, propertyGet, propertySet;
   private final long deadline;
@@ -76,6 +80,7 @@ public final class PowerHoldBridge {
     // The installed enum.name() is the OEM bundle key; only these two fields can be written.
     vehicle.putInt(((Enum<?>) timeState).name(), rawTime);
     vehicle.putInt(((Enum<?>) switchState).name(), enable ? 1 : 0);
+    writeAttempted = true;
     int result = ((Number) bundleSetter.invoke(service, null, vehicle)).intValue();
     if (result != 0) throw new IllegalStateException("queue");
     // 0 means AsyncTask queued, never ECU acknowledgement.
@@ -132,7 +137,7 @@ public final class PowerHoldBridge {
       if (requestedDeadline <= now || requestedDeadline - now > 7500) throw new IllegalArgumentException("deadline");
     } catch (RuntimeException failure) {
       System.out.println("PH1\tERROR\tdeadline");
-      System.exit(1);
+      System.exit(NOT_SENT);
       return;
     }
     final long deadline = Math.min(requestedDeadline, now + 6500);
@@ -145,7 +150,6 @@ public final class PowerHoldBridge {
     watchdog.start();
     int exit = 1;
     try {
-      if (android.os.Process.myUid() != 0) throw new IllegalStateException("root");
       String operation = args[0];
       if (!("status".equals(operation) && args.length == 3)
           && !("acquire".equals(operation) && args.length == 5)
@@ -167,7 +171,8 @@ public final class PowerHoldBridge {
           if (!original.sameAs(current) || !PowerHoldPolicy.canAcquire(current)) reply("STALE", current);
           else {
             bridge.queue(raw, true);
-            bridge.writeProperty("on");
+            try { bridge.writeProperty("on"); }
+            catch (Exception failure) { bridge.queue(raw, false); throw failure; } // Never leave a half-made request.
             reply("QUEUED", bridge.snapshot());
           }
         } else {
@@ -175,15 +180,15 @@ public final class PowerHoldBridge {
           PowerHoldPolicy.ReleaseDecision decision = lease.releaseDecision(current);
           if (decision != PowerHoldPolicy.ReleaseDecision.RELEASE) reply(decision.name(), current);
           else {
-            bridge.queue(original.rawTime, false);
+            bridge.queue(lease.releaseTime(), false);
             // A different property after the queued request may be an external update.
             // OEM callbacks may clear it too; exact equality still avoids blind overwrites.
             String property = bridge.property();
-            if ("on".equals(property)) bridge.writeProperty(original.property);
-            else if (!original.property.equals(property)) throw new IllegalStateException("release-property-changed");
+            if ("on".equals(property)) bridge.writeProperty(original.property.isEmpty() ? "off" : original.property);
+            else if (!PowerHoldPolicy.sameProperty(original.property, property)) throw new IllegalStateException("release-property-changed");
             PowerHoldPolicy.Snapshot after = bridge.snapshot();
             boolean complete = after.switchValue == 0 && after.rawTime == original.rawTime
-                && original.property.equals(after.property) && original.boot.equals(after.boot);
+                && PowerHoldPolicy.sameProperty(original.property, after.property) && original.boot.equals(after.boot);
             reply(complete ? "RELEASED" : "RELEASE_QUEUED", after);
           }
         }
@@ -191,8 +196,11 @@ public final class PowerHoldBridge {
       exit = 0;
     } catch (Throwable failure) {
       // Never expose arbitrary OEM output/property values to the UI or offer raw retry commands.
+      Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+      android.util.Log.w("PowerHoldBridge", cause.toString());
       System.out.println("PH1\tERROR\tunavailable-or-incomplete");
       System.out.flush();
+      if (!writeAttempted) exit = NOT_SENT;
     } finally {
       watchdog.interrupt();
     }

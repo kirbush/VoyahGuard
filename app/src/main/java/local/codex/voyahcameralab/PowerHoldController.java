@@ -23,7 +23,7 @@ final class PowerHoldController {
   private final SharedPreferences journal;
   private final String session = UUID.randomUUID().toString();
   private final PowerHoldPolicy.OwnershipGuard ownership = new PowerHoldPolicy.OwnershipGuard(session);
-  private volatile String cached = "Power Hold: выключен";
+  private volatile String cached = "Power Hold: штатное состояние не проверено";
   private volatile boolean owned;
   private volatile int releaseChecks;
   private boolean recovered, releaseStarted, releaseAttempted, leaseMatched, acquireFailed, cleanupSubmitted;
@@ -76,7 +76,7 @@ final class PowerHoldController {
       cached = recoveredWarning();
       return true;
     }
-    if (recovered && !pending) cached = "Power Hold: выключен";
+    if (recovered && !pending) cached = "Power Hold: штатное состояние не проверено";
     recovered = false;
     return false;
   }
@@ -149,7 +149,7 @@ final class PowerHoldController {
       if (lease != null) {
         acquireFailed = true;
         cached = "Power Hold: недоступен — ошибка запроса; изменение могло быть частичным, отключение требует проверки";
-      } else cached = "Power Hold: недоступен — нет подтверждённого доступа к поддерживаемому API/root";
+      } else cached = "Power Hold: недоступен — нет доступа к поддерживаемому API";
     }
     return cached;
   }
@@ -179,7 +179,7 @@ final class PowerHoldController {
         }
       }
     } catch (Exception failure) {
-      cached = lease == null ? "Power Hold: недоступен — нет ответа поддерживаемого API/root"
+      cached = lease == null ? "Power Hold: недоступен — нет ответа поддерживаемого API"
           : "Power Hold: недоступен — состояние неизвестно; журнал отключения сохранён";
     }
     return cached;
@@ -225,8 +225,10 @@ final class PowerHoldController {
       if (!ownJournalForMutation()) return cached;
       // Set only here: a lagging TIME or a failed status read has sent nothing and may be checked again.
       releaseAttempted = true;
-      releaseChecks = RELEASE_CHECKS;
-      Reply result = invoke("release", deadline, lease.original, lease.minutes);
+      Reply result;
+      try { result = invoke("release", System.nanoTime() + CALL_NANOS, lease.original, lease.minutes); }
+      catch (NotSent nothingWritten) { return releaseNotSent(); }
+      if ("UNKNOWN".equals(result.code)) return releaseNotSent();
       if ("ENDED".equals(result.code) || "CHANGED".equals(result.code) || "UNKNOWN".equals(result.code))
         lease.releaseDecision(result.snapshot); // reclassify with history; a fresh helper has never seen our requested TIME
       cleanupSubmitted = "RELEASED".equals(result.code) || "RELEASE_QUEUED".equals(result.code);
@@ -252,10 +254,18 @@ final class PowerHoldController {
     return cached;
   }
 
+  /** The helper wrote nothing, so the disable is still owed; tick() retries within releaseChecks. */
+  private String releaseNotSent() {
+    releaseAttempted = false;
+    cached = releaseChecks > 0 ? "Power Hold: отключение ещё не отправлено — повтор"
+        : "Power Hold: ошибка отключения — команда не отправлена; журнал сохранён, отключите режим вручную";
+    return cached;
+  }
+
   private boolean restored(PowerHoldPolicy.Snapshot current) {
     return lease != null && current != null && current.switchValue == 0
         && current.rawTime == lease.original.rawTime
-        && lease.original.property.equals(current.property) && lease.original.boot.equals(current.boot);
+        && PowerHoldPolicy.sameProperty(lease.original.property, current.property) && lease.original.boot.equals(current.boot);
   }
   private void finishJournal(String text) {
     if (!ownJournalForMutation()) return;
@@ -290,6 +300,8 @@ final class PowerHoldController {
     }
   }
 
+  private static final class NotSent extends IOException {}
+
   private static final class Reply {
     final String code;
     final PowerHoldPolicy.Snapshot snapshot;
@@ -303,7 +315,8 @@ final class PowerHoldController {
     if (apk == null || !apk.startsWith("/") || apk.indexOf(':') >= 0 || apk.indexOf('\n') >= 0)
       throw new IOException("Invalid own APK path");
     List<String> command = new ArrayList<>();
-    command.add("/system/xbin/su"); command.add("0"); command.add("/system/bin/app_process");
+    // Runs with the app's own UID: su is unreachable for apps here and CanBusService needs no more.
+    command.add("/system/bin/app_process");
     command.add("-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH);
     command.add("/system/bin"); command.add("local.codex.voyahcameralab.PowerHoldBridge");
     command.add(operation); command.add(Integer.toString(location));
@@ -326,6 +339,7 @@ final class PowerHoldController {
       if (remaining <= 0 || !process.waitFor(remaining, TimeUnit.NANOSECONDS)) throw new IOException("Timeout");
       remaining = deadline - System.nanoTime();
       if (remaining > 0) reader.join(Math.max(1, Math.min(100, TimeUnit.NANOSECONDS.toMillis(remaining))));
+      if (process.exitValue() == PowerHoldBridge.NOT_SENT) throw new NotSent();
       if (reader.isAlive() || output.overflow || process.exitValue() != 0) throw new IOException("Incomplete helper reply");
       Reply reply = null;
       for (String line : output.text().split("\r?\n")) {

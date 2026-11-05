@@ -17,4 +17,7 @@
     <item name="storage_percent_picker" type="id"/>
     <item name="segment_picker" type="id"/>
     <item name="padding_correction_checkbox" type="id"/>
+    <item name="adaptive_checkbox" type="id"/>
+    <item name="adaptive_scenario_picker" type="id"/>
+    <item name="adaptive_status" type="id"/>
 </resources>

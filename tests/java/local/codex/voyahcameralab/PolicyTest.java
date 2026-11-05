@@ -14,7 +14,7 @@ public final class PolicyTest {
     check(tall.outputWidth==1920&&tall.outputHeight==1200,"Full-frame source is never normalized to 720 rows");
     check(raw.cropBottom==0f&&raw.cropTop==1f&&!raw.paddingCorrected,"Default keeps every source row and does not apply the experimental profile");
     FramePolicy disabled=FramePolicy.forCapture("1",1920,1200,0,false);
-    check(disabled.outputHeight==1200&&!disabled.paddingCorrected&&disabled.cropBottom==0f,"Correction requires explicit opt-in");
+    check(disabled.outputHeight==720&&!disabled.paddingCorrected&&disabled.cropBottom==0f&&disabled.cropTop==1f,"The AVM frame is scaled to its true proportions, never cropped, without the legacy opt-in");
     for(int height:new int[]{720,1080,1200}){
       FramePolicy corrected=FramePolicy.forCapture("1",1920,height,0,true);
       check(corrected.paddingCorrected&&corrected.outputWidth==1920&&corrected.outputHeight==720,"Known legacy inputs restore 1920x720 only when requested");
@@ -43,6 +43,17 @@ public final class PolicyTest {
     check(fit[0]==0&&fit[1]==18&&fit[2]==1000&&fit[3]==563,"Letterbox without distortion");
     int[] portraitFit=rotated.fit(1000,600);
     check(portraitFit[0]==331&&portraitFit[1]==0&&portraitFit[2]==338&&portraitFit[3]==600,"Portrait source is pillarboxed without distortion");
+    FramePolicy padded=FramePolicy.forCapture("1",1920,1200,0,true);
+    check(padded.paddingCorrected&&padded.anamorphic&&padded.outputHeight==720&&padded.cropBottom==0.4f,"Green padding crop keeps the same picture layout");
+    check(padded.fit(1760,720)[0]==-160&&padded.fit(1760,720)[5]==1760,"Green padding crop also hides the toolbar on screen");
+    FramePolicy avm=FramePolicy.forCapture("1",1920,1200,0,false);
+    check(avm.anamorphic&&avm.outputWidth==1920&&avm.outputHeight==720,"Recording stores the AVM frame in true 8:3 proportions");
+    int[] avmFit=avm.fit(1760,720);
+    check(avmFit[0]==-160&&avmFit[1]==0&&avmFit[2]==1920&&avmFit[3]==720,"AVM preview restores 8:3 and pushes the toolbar off the left edge");
+    check(avmFit[4]==0&&avmFit[5]==1760,"Only the picture columns remain visible");
+    int[] avmWide=avm.fit(1770,675);
+    check(avmWide[4]==60&&avmWide[5]==1650&&avmWide[2]==1800&&avmWide[0]==-90,"The clip hides the toolbar inside a pillarboxed window too");
+    check(FramePolicy.forCapture("1",1920,1080,0,false).fit(1920,1080)[4]==0,"Other sizes stay uncropped");
     TimestampClock time=new TimestampClock(1000000000L);
     check(time.next(1000000000L)==0,"First timestamp");
     check(time.next(1000000000L)==1,"Duplicate clock must advance");

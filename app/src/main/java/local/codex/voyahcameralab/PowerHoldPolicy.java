@@ -54,11 +54,13 @@ final class PowerHoldPolicy {
       this.warning = warning;
       this.boot = boot;
     }
+    /** TIME is -1 on H97X in every state, including an active hold: the cache never reports it. */
     boolean usable() {
-      return (switchValue == 0 || switchValue == 1) && rawTime >= 0 && rawTime <= 15
+      return (switchValue == 0 || switchValue == 1) && rawTime >= -1 && rawTime <= 15
           && property != null && property.getBytes(StandardCharsets.UTF_8).length <= 91
           && gear != null && boot != null && !boot.isEmpty();
     }
+    boolean timeReported() { return rawTime >= 0; }
     boolean safeParking() {
       return "Parking".equals(gear) && soc >= 15 && soc <= 100
           && warning != 1 && warning != 2;
@@ -89,6 +91,10 @@ final class PowerHoldPolicy {
           fields[4], Integer.parseInt(fields[2]), Integer.parseInt(fields[3]), fields[6]);
     }
   }
+
+  /** The OEM listener writes "off" over the empty value left by boot: both mean not prepared. */
+  static boolean sameProperty(String left, String right) { return normal(left).equals(normal(right)); }
+  private static String normal(String value) { return value == null || value.isEmpty() ? "off" : value; }
 
   static boolean canAcquire(Snapshot snapshot) {
     return snapshot != null && snapshot.usable() && snapshot.safeParking()
@@ -123,6 +129,8 @@ final class PowerHoldPolicy {
       this.minutes = minutes;
       this.rawTime = rawMinutes(minutes);
     }
+    /** TIME sent with the disable: an unreported original must not be written back as -1. */
+    int releaseTime() { return original.timeReported() ? original.rawTime : rawTime; }
     ReleaseDecision releaseDecision(Snapshot current) {
       if (writeAuthorityRevoked) return ReleaseDecision.REVOKED;
       ReleaseDecision decision = inspect(current);
@@ -142,6 +150,8 @@ final class PowerHoldPolicy {
       if (current.soc < 0 || current.soc > 100 || current.gear.isEmpty()
           || "Unknown".equals(current.gear)) return ReleaseDecision.UNKNOWN;
       if (!"on".equals(current.property) || !current.safeParking()) return ReleaseDecision.CHANGED;
+      if (!original.timeReported()) return ReleaseDecision.RELEASE; // Only the switch and property exist here.
+      if (!current.timeReported()) return ReleaseDecision.UNKNOWN;
       if (current.rawTime != rawTime) {
         // The setter only queues work: its first readback can still contain the saved
         // duration. It proves neither ownership nor an external change. Once our
