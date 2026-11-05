@@ -35,7 +35,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private final Runnable analyse = this::analyse;
 
   private volatile int generation;
-  private volatile boolean active, wanted;
+  private volatile boolean active, wanted, threeD, halted;
   private boolean opened, commanded;
   private AdaptiveViewPolicy policy;
   private MotionAnalyzer analyzer;
@@ -52,9 +52,9 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   }
 
   /** Main thread, after a recording has started. */
-  void start() {
+  void start(boolean threeD) {
     if (wanted) return;
-    wanted = true;
+    wanted = true; this.threeD = threeD; halted = false;
     int run = ++generation;
     publish("Адаптивный вид: подготовка");
     control.execute(() -> prepare(run));
@@ -68,7 +68,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     analysis.post(this::finishRun);
     control.execute(() -> {
       try {
-        if (commanded) AvmViewControl.send(home);
+        if (commanded) { if (threeD) AvmViewControl.sendButton(home); else AvmViewControl.send(home); }
         if (opened) AvmViewControl.close();
       } catch (Exception error) { Log.w(TAG, "Return", error); }
       commanded = false; opened = false;
@@ -102,11 +102,14 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private void beginRun(int run) {
     if (run != generation) return;
     try {
-      if (analyzer == null) { System.loadLibrary("opencv_java4"); analyzer = new MotionAnalyzer(); }
+      System.loadLibrary("opencv_java4");
+      releaseAnalyzer();
+      analyzer = new MotionAnalyzer(threeD);
     } catch (Throwable error) { halt(run, "детектор не загрузился: " + error.getMessage()); return; }
     long now = SystemClock.elapsedRealtime();
-    policy = new AdaptiveViewPolicy(now, AvmLayout.FRONT);
-    lastGuard = now; samples = 0; dropped = 0; home = AvmLayout.FRONT;
+    int start = threeD ? AvmLayout.HOME_3D : AvmLayout.FRONT;
+    policy = new AdaptiveViewPolicy(now, start, threeD ? AvmLayout.BUTTONS : AvmLayout.VIEWS, threeD);
+    lastGuard = now; samples = 0; dropped = 0; home = start;
     openLog();
     active = true;
     publish("Адаптивный вид: определение ракурса");
@@ -146,9 +149,10 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     if (!active || current == null) return;
     try {
       long started = SystemClock.elapsedRealtime();
-      int marker = AvmLayout.selectedView(working);
+      int glyph = AvmLayout.selectedView(working);
+      int marker = threeD ? AvmLayout.selectedButton(working) : glyph;
       MotionAnalyzer.Reading reading = analyzer.process(working);
-      int request = current.onSample(started, marker, reading.near);
+      int request = current.onSample(started, marker, glyph != AvmLayout.VIEW_UNKNOWN, reading.near);
       home = current.home();
       long took = SystemClock.elapsedRealtime() - started;
       samples++;
@@ -168,7 +172,8 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       if (run != generation) return;
       try {
         commanded = true;
-        if (!AvmViewControl.send(view)) analysis.post(current::commandFailed);
+        boolean sent = view == AvmLayout.TOGGLE_2D ? AvmViewControl.toggleMode() : threeD ? AvmViewControl.sendButton(view) : AvmViewControl.send(view);
+        if (!sent) analysis.post(current::commandFailed);
       } catch (Exception error) { analysis.post(current::commandFailed); }
     });
   }
@@ -182,7 +187,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
 
   private void halt(int run, String reason) {
     if (run != generation) return;
-    active = false;
+    active = false; halted = true;
     publish("Адаптивный вид остановлен: " + reason + " · запись продолжается");
   }
 
@@ -198,7 +203,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private void report(AdaptiveViewPolicy current, long now) {
     int view = current.current();
     if (view == AvmLayout.VIEW_UNKNOWN) return;
-    publish("Адаптивный вид: " + AvmLayout.NAMES[view] + (current.active(now) ? " · рядом движение" : " · ожидание"));
+    publish("Адаптивный вид: " + (threeD ? AvmLayout.WATCH_3D[view] : AvmLayout.NAMES[view]) + (current.active(now) ? " · рядом движение" : " · ожидание"));
   }
 
   private void publish(String text) {
@@ -208,6 +213,8 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   }
 
   String status() { return status; }
+  /** Stopped by itself, for example because the owner closed the 360 screen. */
+  boolean halted() { return halted; }
 
   private void openLog() {
     closeLog();
@@ -217,17 +224,18 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       File file = new File(dir, "adaptive-log.csv"), previous = new File(dir, "adaptive-log.1.csv");
       if (file.exists() && !file.renameTo(previous)) Log.w(TAG, "Log rotation failed");
       log = new BufferedWriter(new FileWriter(file));
-      log.write("elapsed_ms,marker,current,home,active,settled,top_blob,z_front,z_left,z_rear,z_right,rejected,request,reason,took_ms,dropped\n");
+      log.write("elapsed_ms,marker,current,home,active,settled,top_blob,near,rejected,request,reason,took_ms,dropped\n");
       logged = 0;
     } catch (IOException error) { log = null; }
   }
 
   private void record(long now, int marker, AdaptiveViewPolicy current, MotionAnalyzer.Reading reading, int request, long took) {
     if (log == null || logged >= LOG_LIMIT_BYTES) return;
-    boolean[] z = reading.near;
-    String row = String.format(Locale.ROOT, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%d,%d\n", now, marker, current.current(),
+    StringBuilder near = new StringBuilder();
+    for (boolean side : reading.near) near.append(side ? '1' : '0');
+    String row = String.format(Locale.ROOT, "%d,%d,%d,%d,%d,%d,%d,%s,%d,%d,%s,%d,%d\n", now, marker, current.current(),
         current.home(), current.active(now) ? 1 : 0, current.settled(now) ? 1 : 0, reading.largestBlob,
-        z[0] ? 1 : 0, z[1] ? 1 : 0, z[2] ? 1 : 0, z[3] ? 1 : 0, reading.rejected ? 1 : 0, request,
+        near, reading.rejected ? 1 : 0, request,
         request == AvmLayout.VIEW_UNKNOWN ? "" : current.lastReason().name(), took, dropped);
     try {
       log.write(row);

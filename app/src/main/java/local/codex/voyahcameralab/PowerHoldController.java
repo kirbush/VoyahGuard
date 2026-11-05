@@ -149,7 +149,7 @@ final class PowerHoldController {
       if (lease != null) {
         acquireFailed = true;
         cached = "Power Hold: недоступен — ошибка запроса; изменение могло быть частичным, отключение требует проверки";
-      } else cached = "Power Hold: недоступен — нет подтверждённого доступа к поддерживаемому API/root";
+      } else cached = "Power Hold: недоступен — нет доступа к поддерживаемому API";
     }
     return cached;
   }
@@ -179,7 +179,7 @@ final class PowerHoldController {
         }
       }
     } catch (Exception failure) {
-      cached = lease == null ? "Power Hold: недоступен — нет ответа поддерживаемого API/root"
+      cached = lease == null ? "Power Hold: недоступен — нет ответа поддерживаемого API"
           : "Power Hold: недоступен — состояние неизвестно; журнал отключения сохранён";
     }
     return cached;
@@ -303,8 +303,7 @@ final class PowerHoldController {
     if (apk == null || !apk.startsWith("/") || apk.indexOf(':') >= 0 || apk.indexOf('\n') >= 0)
       throw new IOException("Invalid own APK path");
     List<String> command = new ArrayList<>();
-    // Reading needs no root; su is unreachable for this UID, so only writes keep asking for it.
-    if (!"status".equals(operation)) { command.add("/system/xbin/su"); command.add("0"); }
+    // Runs with the app's own UID: su is unreachable for apps here and CanBusService needs no more.
     command.add("/system/bin/app_process");
     command.add("-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH);
     command.add("/system/bin"); command.add("local.codex.voyahcameralab.PowerHoldBridge");

@@ -14,11 +14,11 @@ public final class AdaptiveViewPolicyTest {
   private static final class Car {
     final AdaptiveViewPolicy policy; long now = 1000; int marker, pending = NO; long applyAt; int requests; int lastRequest = NO;
     boolean deaf;
-    Car(int start) { marker = start; policy = new AdaptiveViewPolicy(now, F); }
+    Car(int start) { marker = start; policy = new AdaptiveViewPolicy(now, F, AvmLayout.VIEWS, false); }
     int step(boolean[] near) {
       now += STEP;
       if (pending != NO && now >= applyAt) { marker = pending; pending = NO; }
-      int request = policy.onSample(now, marker, near);
+      int request = policy.onSample(now, marker, marker != NO, near);
       if (request != NO) { requests++; lastRequest = request; if (!deaf) { pending = request == AvmLayout.TOGGLE_2D ? F : request; applyAt = now + 500; } }
       return request;
     }
@@ -43,6 +43,11 @@ public final class AdaptiveViewPolicyTest {
     unconfirmedViewStopsAfterOneRetry();
     lostGlyphStops();
     failedCommandStops();
+    threeDStartsLookingThroughTheCarAtTheFront();
+    threeDLeavesTwoDScreenFirst();
+    threeDHiddenButtonsAreNotALostView();
+    threeDUnconfirmedButtonStops();
+    sectorsAndOppositeButtons();
     zonesMapToDirections();
     markerDetectionRequiresExactlyOne();
     System.out.println("PASS: adaptive view policy");
@@ -182,6 +187,68 @@ public final class AdaptiveViewPolicyTest {
     int requests = car.requests;
     car.run(10000, near(R));
     check(car.requests == requests && car.policy.stopped() == Stop.COMMAND_FAILED, "failed command must stop automation");
+  }
+
+  /** 3D car: the lit button shows only for a few seconds after a touch. */
+  private static final class Car3D {
+    final AdaptiveViewPolicy policy; long now = 1000, litUntil, applyAt; int shown = 2, pending = NO, requests, lastRequest = NO; boolean twoD, deaf;
+    Car3D(boolean twoD) { this.twoD = twoD; policy = new AdaptiveViewPolicy(now, AvmLayout.HOME_3D, AvmLayout.BUTTONS, true); }
+    void step(boolean[] near) {
+      now += STEP;
+      if (pending != NO && now >= applyAt) { shown = pending; pending = NO; litUntil = now + 4000; }
+      int request = policy.onSample(now, now < litUntil ? shown : NO, twoD, near);
+      if (request == NO) return;
+      requests++; lastRequest = request;
+      if (request == AvmLayout.TOGGLE_2D) twoD = false;
+      else if (!deaf) { pending = request; applyAt = now + 900; }
+    }
+    void run(long ms, boolean[] near) { for (long end = now + ms; now < end; ) step(near); }
+  }
+
+  private static void threeDStartsLookingThroughTheCarAtTheFront() {
+    Car3D car = new Car3D(false);
+    car.run(5500, new boolean[8]);
+    check(car.shown == AvmLayout.HOME_3D && car.requests == 1, "3D must start on the rear button, which watches the front");
+  }
+
+  private static void threeDLeavesTwoDScreenFirst() {
+    Car3D car = new Car3D(true);
+    car.run(4000, new boolean[8]);
+    check(car.lastRequest == AvmLayout.TOGGLE_2D, "2D screen must be switched to 3D first");
+    car.run(4000, new boolean[8]);
+    check(car.shown == AvmLayout.HOME_3D && car.requests == 2, "then the home button");
+  }
+
+  private static void threeDHiddenButtonsAreNotALostView() {
+    Car3D car = new Car3D(false);
+    car.run(60000, new boolean[8]);
+    check(car.policy.stopped() == Stop.NONE && car.requests == 1, "hidden buttons must not stop 3D");
+    boolean[] near = new boolean[8]; near[6] = true;
+    car.run(2000, near);
+    check(car.lastRequest == 6, "motion must move the camera to the opposite button");
+    car.run(1000, near);
+    car.run(AdaptiveViewPolicy.HOLD_TAIL_MS + 3000, new boolean[8]);
+    check(car.shown == AvmLayout.HOME_3D, "3D must return home");
+  }
+
+  private static void threeDUnconfirmedButtonStops() {
+    Car3D car = new Car3D(false);
+    car.deaf = true;
+    car.run(15000, new boolean[8]);
+    check(car.policy.stopped() == Stop.NOT_CONFIRMED && car.requests == 2, "3D needs its button lit after a touch");
+  }
+
+  private static void sectorsAndOppositeButtons() {
+    check(AvmLayout.sector(440, 60) == 0, "ahead");
+    check(AvmLayout.sector(680, 90) == 1, "ahead right");
+    check(AvmLayout.sector(700, 600) == 2, "right");
+    check(AvmLayout.sector(680, 1110) == 3, "behind right");
+    check(AvmLayout.sector(440, 1150) == 4, "behind");
+    check(AvmLayout.sector(200, 1110) == 5, "behind left");
+    check(AvmLayout.sector(180, 600) == 6, "left");
+    check(AvmLayout.sector(200, 90) == 7, "ahead left");
+    check(AvmLayout.sector(440, 600) == NO, "the car has no direction");
+    check(AvmLayout.throughCar(0) == AvmLayout.HOME_3D && AvmLayout.throughCar(6) == 2, "the camera stands on the opposite side");
   }
 
   private static void zonesMapToDirections() {

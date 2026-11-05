@@ -29,7 +29,8 @@ final class MotionAnalyzer {
   static final int MIN_BLOB = 30;
 
   static final class Reading {
-    int largestBlob; boolean rejected; final boolean[] near = new boolean[AvmLayout.VIEWS];
+    int largestBlob; boolean rejected; final boolean[] near;
+    Reading(int views) { near = new boolean[views]; }
   }
 
   private final Mat buffer = new Mat(AvmLayout.BUFFER_HEIGHT, AvmLayout.SAMPLE_WIDTH, CvType.CV_8UC4);
@@ -42,14 +43,27 @@ final class MotionAnalyzer {
   private final BackgroundSubtractorMOG2 model = Video.createBackgroundSubtractorMOG2(HISTORY, VAR_THRESHOLD, false);
   private final Mat lifted = new Mat(), darkTones = new Mat(1, 256, CvType.CV_8UC1);
 
-  MotionAnalyzer() {
+  private final boolean threeD;
+
+  MotionAnalyzer(boolean threeD) {
+    this.threeD = threeD;
     byte[] table = new byte[256];
     for (int level = 0; level < table.length; level++) table[level] = (byte) Math.round(255 * Math.pow(level / 255.0, DARK_TONE_GAMMA));
     darkTones.put(0, 0, table);
-    for (int[] box : AvmLayout.TOP_EXCLUDED) {
-      int x0 = Math.max(0, AvmLayout.sample(box[0]) - AvmLayout.TOP_X0), x1 = AvmLayout.sample(box[2]) - AvmLayout.TOP_X0;
-      Imgproc.rectangle(mask, new Point(x0, AvmLayout.sample(box[1])), new Point(x1, AvmLayout.sample(box[3])), new Scalar(0), -1);
-    }
+    for (int[] box : AvmLayout.TOP_EXCLUDED) exclude(box);
+    if (threeD) for (int[] box : AvmLayout.TOP_EXCLUDED_3D) exclude(box);
+  }
+
+  private void exclude(int[] box) {
+    int x0 = Math.max(0, AvmLayout.sample(box[0]) - AvmLayout.TOP_X0), x1 = AvmLayout.sample(box[2]) - AvmLayout.TOP_X0;
+    Imgproc.rectangle(mask, new Point(x0, AvmLayout.sample(box[1])), new Point(x1, AvmLayout.sample(box[3])), new Scalar(0), -1);
+  }
+
+  /** The view that would show a point of the panorama, or VIEW_UNKNOWN on the car itself. */
+  private int viewFor(int sourceX, int sourceY) {
+    if (!threeD) return AvmLayout.zone(sourceX, sourceY);
+    int sector = AvmLayout.sector(sourceX, sourceY);
+    return sector == AvmLayout.VIEW_UNKNOWN ? sector : AvmLayout.throughCar(sector);
   }
 
   Reading process(byte[] frame) {
@@ -63,7 +77,7 @@ final class MotionAnalyzer {
     Core.bitwise_and(foreground, mask, foreground);
     Imgproc.morphologyEx(foreground, opened, Imgproc.MORPH_OPEN, kernel);
     int count = Imgproc.connectedComponentsWithStats(opened, labels, stats, centroids, 8, CvType.CV_32S), total = 0;
-    Reading reading = new Reading();
+    Reading reading = new Reading(threeD ? AvmLayout.BUTTONS : AvmLayout.VIEWS);
     int[] area = new int[1]; double[] centre = new double[2];
     for (int label = 1; label < count; label++) {
       stats.get(label, Imgproc.CC_STAT_AREA, area);
@@ -71,8 +85,8 @@ final class MotionAnalyzer {
       reading.largestBlob = Math.max(reading.largestBlob, area[0]);
       if (area[0] < MIN_BLOB) continue;
       centroids.get(label, 0, centre);
-      int zone = AvmLayout.zone(AvmLayout.source(centre[0] + AvmLayout.TOP_X0), AvmLayout.source(centre[1]));
-      if (zone != AvmLayout.VIEW_UNKNOWN) reading.near[zone] = true;
+      int view = viewFor(AvmLayout.source(centre[0] + AvmLayout.TOP_X0), AvmLayout.source(centre[1]));
+      if (view != AvmLayout.VIEW_UNKNOWN) reading.near[view] = true;
     }
     if (total > topRect.width * topRect.height * WHOLE_SCENE) { // exposure or lighting change, not an object
       reading.rejected = true;

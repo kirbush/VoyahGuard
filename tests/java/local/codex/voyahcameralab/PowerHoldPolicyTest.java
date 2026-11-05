@@ -95,8 +95,18 @@ public final class PowerHoldPolicyTest {
     check(!PowerHoldPolicy.canAcquire(sample(0, 4, "on", "Parking", 80, 0, "boot-a")), "Never acquire existing armed hold");
     for (int sw : new int[]{-1, 2})
       check(!PowerHoldPolicy.canAcquire(sample(sw, 4, "", "Parking", 80, 0, "boot-a")), "Unknown switch denied");
-    for (int time : new int[]{-1, 16})
-      check(!PowerHoldPolicy.canAcquire(sample(0, time, "", "Parking", 80, 0, "boot-a")), "Unknown duration denied");
+    check(!PowerHoldPolicy.canAcquire(sample(0, 16, "", "Parking", 80, 0, "boot-a")), "Invalid duration denied");
+    PowerHoldPolicy.Snapshot h97x = sample(0, -1, "off", "Parking", 80, 0, "boot-a");
+    check(PowerHoldPolicy.canAcquire(h97x), "H97X never reports TIME, the hold must still start");
+    PowerHoldPolicy.Lease unreported = new PowerHoldPolicy.Lease(h97x, 30);
+    check(unreported.releaseTime() == 1, "An unreported duration is never written back as -1");
+    check(PowerHoldPolicy.state(sample(1, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.State.ACTIVE, "Active hold reads active with TIME -1");
+    check(PowerHoldPolicy.state(sample(0, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.State.ARMED, "Prepared hold reads prepared with TIME -1");
+    check(unreported.releaseDecision(sample(0, -1, "off", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.ReleaseDecision.ENDED, "Owner cancellation ends the lease without a write");
+    check(unreported.releaseDecision(sample(1, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.ReleaseDecision.REVOKED, "Authority is not regained after cancellation");
+    PowerHoldPolicy.Lease prepared = new PowerHoldPolicy.Lease(h97x, 30);
+    check(prepared.releaseDecision(sample(0, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.ReleaseDecision.RELEASE, "A prepared own hold is released");
+    check(prepared.releaseDecision(sample(1, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.ReleaseDecision.RELEASE, "An active own hold is released");
     for (int soc : new int[]{-1, 0, 14, 101})
       check(!PowerHoldPolicy.canAcquire(sample(0, 4, "", "Parking", soc, 0, "boot-a")), "Unsafe SOC denied");
     for (String gear : new String[]{"Drive", "Unknown", "", "Reverse"})

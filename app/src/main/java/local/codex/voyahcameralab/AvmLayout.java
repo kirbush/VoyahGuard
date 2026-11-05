@@ -10,7 +10,17 @@ final class AvmLayout {
   private AvmLayout() {}
   static final int VIEW_UNKNOWN = -1, FRONT = 0, LEFT = 1, REAR = 2, RIGHT = 3, VIEWS = 4;
   /** Not a view: the toolbar touch that flips the OEM screen between 2D and 3D. */
-  static final int TOGGLE_2D = 4;
+  static final int TOGGLE_2D = 100;
+  /**
+   * 3D scenario. Buttons run clockwise from the one ahead of the car. Each puts the virtual camera
+   * at that side looking through the transparent car, so it shows the opposite side.
+   */
+  static final int BUTTONS = 8, HOME_3D = 4;
+  static final String[] WATCH_3D = {"зад", "зад-лево", "лево", "перед-лево", "перед", "перед-право", "право", "зад-право"};
+  private static final int[][] BUTTON_CENTRES = {{440, 165}, {575, 342}, {600, 600}, {575, 855}, {440, 1037}, {303, 855}, {280, 600}, {303, 342}};
+  private static final int BUTTON_HALF_X = 3, BUTTON_HALF_Y = 5, CAR_CENTRE_X = 440, CAR_CENTRE_Y = 600, HALF_WIDTH = 280, HALF_HEIGHT = 600;
+  /** The four diagonal buttons exist only in 3D. */
+  static final int[][] TOP_EXCLUDED_3D = {{258, 270, 348, 415}, {530, 270, 620, 415}, {258, 780, 348, 930}, {530, 780, 620, 930}};
   static final String[] NAMES = {"перед", "лево", "зад", "право"};
 
   static final int SAMPLE_WIDTH = 320, SAMPLE_HEIGHT = 200;
@@ -43,6 +53,42 @@ final class AvmLayout {
     // 1920×1200 is anamorphic: a source pixel covers 5/3 less height than width on the ground.
     if (dx * 5 >= dy * 3) return sourceX < CAR_LEFT ? LEFT : RIGHT;
     return sourceY < CAR_TOP ? FRONT : REAR;
+  }
+
+  /** Direction of a top-view point as one of eight sectors clockwise from ahead, or VIEW_UNKNOWN on the car. */
+  static int sector(int sourceX, int sourceY) {
+    if (sourceX >= CAR_LEFT && sourceX <= CAR_RIGHT && sourceY >= CAR_TOP && sourceY <= CAR_BOTTOM) return VIEW_UNKNOWN;
+    double angle = Math.atan2((sourceX - CAR_CENTRE_X) / (double) HALF_WIDTH, (CAR_CENTRE_Y - sourceY) / (double) HALF_HEIGHT);
+    return (int) Math.floor((angle + Math.PI / 8) / (Math.PI / 4) + BUTTONS) % BUTTONS;
+  }
+
+  /** The 3D button whose camera looks through the car at the given sector. */
+  static int throughCar(int sector) { return (sector + BUTTONS / 2) % BUTTONS; }
+
+  /** Which 3D button is lit, or VIEW_UNKNOWN: they hide a few seconds after a touch. */
+  static int selectedButton(byte[] rgba) {
+    if (rgba == null || rgba.length < BUFFER_BYTES) return VIEW_UNKNOWN;
+    int found = VIEW_UNKNOWN;
+    for (int button = 0; button < BUTTONS; button++) {
+      if (!buttonBlue(rgba, sample(BUTTON_CENTRES[button][0]), sample(BUTTON_CENTRES[button][1]))) continue;
+      if (found != VIEW_UNKNOWN) return VIEW_UNKNOWN;
+      found = button;
+    }
+    return found;
+  }
+
+  private static boolean buttonBlue(byte[] rgba, int centreX, int centreY) {
+    int blue = 0, total = 0;
+    for (int y = centreY - BUTTON_HALF_Y; y <= centreY + BUTTON_HALF_Y; y++) {
+      for (int x = centreX - BUTTON_HALF_X; x <= centreX + BUTTON_HALF_X; x++) {
+        total++;
+        if (x < 0 || y < 0 || x >= SAMPLE_WIDTH || y >= SAMPLE_HEIGHT) continue;
+        int p = (y * SAMPLE_WIDTH + x) * 4;
+        int r = rgba[p] & 255, g = rgba[p + 1] & 255, b = rgba[p + 2] & 255;
+        if (b >= 110 && b - r >= 55 && g > r && b > g) blue++;
+      }
+    }
+    return blue * 3 >= total;
   }
 
   /**

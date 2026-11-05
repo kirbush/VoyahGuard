@@ -146,7 +146,6 @@ public final class PowerHoldBridge {
     int exit = 1;
     try {
       String operation = args[0];
-      if (!"status".equals(operation) && android.os.Process.myUid() != 0) throw new IllegalStateException("root");
       if (!("status".equals(operation) && args.length == 3)
           && !("acquire".equals(operation) && args.length == 5)
           && !("release".equals(operation) && args.length == 5))
@@ -175,7 +174,7 @@ public final class PowerHoldBridge {
           PowerHoldPolicy.ReleaseDecision decision = lease.releaseDecision(current);
           if (decision != PowerHoldPolicy.ReleaseDecision.RELEASE) reply(decision.name(), current);
           else {
-            bridge.queue(original.rawTime, false);
+            bridge.queue(lease.releaseTime(), false);
             // A different property after the queued request may be an external update.
             // OEM callbacks may clear it too; exact equality still avoids blind overwrites.
             String property = bridge.property();

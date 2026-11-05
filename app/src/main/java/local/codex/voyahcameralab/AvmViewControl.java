@@ -7,13 +7,14 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The only automotive surface of the adaptive mode: five fixed touches, the OEM open and
+ * The only automotive surface of the adaptive mode: thirteen fixed touches, the OEM open and
  * close request for the 360 screen, and read-only gear and 360 state. Runs with the app's own
  * UID; nothing here accepts a packet, a state name or a command line from a caller.
  */
 final class AvmViewControl {
   private static final String PRODUCT = "f6811";
-  private static final long PRESS_MS = 120, COMMAND_TIMEOUT_MS = 3000;
+  private static final long PRESS_MS = 120, SECOND_TAP_MS = 300, COMMAND_TIMEOUT_MS = 3000;
+  private static final int TOUCH_MODE = 4, TOUCH_3D = 5;
   private static final long OPEN_PULSE_MS = 3000;
   private static final int AVM_OPEN = 1, AVM_CLOSE = 2, AVM_IDLE = 0;
   private static boolean loaded;
@@ -33,8 +34,17 @@ final class AvmViewControl {
     return "";
   }
 
-  /** @param target one of the AvmLayout views or TOGGLE_2D */
-  static boolean send(int target) throws InterruptedException {
+  static boolean send(int view) throws InterruptedException { return tap(view); }
+  static boolean toggleMode() throws InterruptedException { return tap(TOUCH_MODE); }
+
+  /** The OEM 3D buttons react to a double tap only; a single one changed nothing on the car. */
+  static boolean sendButton(int button) throws InterruptedException {
+    if (!tap(TOUCH_3D + button)) return false;
+    Thread.sleep(SECOND_TAP_MS);
+    return tap(TOUCH_3D + button);
+  }
+
+  private static boolean tap(int target) throws InterruptedException {
     if (nativeTouch(target, true) != 0) return false;
     Thread.sleep(PRESS_MS);
     return nativeTouch(target, false) == 0;
