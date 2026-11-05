@@ -187,7 +187,10 @@ final class PowerHoldController {
 
   private String releaseLocked(long deadline) {
     try {
-      if (recoveredJournal() || lease == null) return cached;
+      if (recoveredJournal() || lease == null) {
+        releaseChecks = 0;
+        return cached;
+      }
       if (!releaseStarted) {
         releaseStarted = true;
         releaseChecks = RELEASE_CHECKS;
@@ -222,6 +225,7 @@ final class PowerHoldController {
       if (!ownJournalForMutation()) return cached;
       // Set only here: a lagging TIME or a failed status read has sent nothing and may be checked again.
       releaseAttempted = true;
+      releaseChecks = RELEASE_CHECKS;
       Reply result = invoke("release", deadline, lease.original, lease.minutes);
       if ("ENDED".equals(result.code) || "CHANGED".equals(result.code) || "UNKNOWN".equals(result.code))
         lease.releaseDecision(result.snapshot); // reclassify with history; a fresh helper has never seen our requested TIME
