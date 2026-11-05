@@ -59,6 +59,11 @@ final class PowerHoldPolicy {
           && property != null && property.getBytes(StandardCharsets.UTF_8).length <= 91
           && gear != null && boot != null && !boot.isEmpty();
     }
+    /** Enough to show the OEM state: TIME stays -1 on H97X even while the hold is active. */
+    boolean readable() {
+      return (switchValue == 0 || switchValue == 1) && rawTime >= -1 && rawTime <= 15
+          && property != null && gear != null && boot != null && !boot.isEmpty();
+    }
     boolean safeParking() {
       return "Parking".equals(gear) && soc >= 15 && soc <= 100
           && warning != 1 && warning != 2;
@@ -103,7 +108,7 @@ final class PowerHoldPolicy {
   }
 
   static State state(Snapshot snapshot) {
-    if (snapshot == null || !snapshot.usable()) return State.UNAVAILABLE;
+    if (snapshot == null || !snapshot.readable()) return State.UNAVAILABLE;
     if (snapshot.switchValue == 1) return State.ACTIVE;
     return "on".equals(snapshot.property) ? State.ARMED : State.OFF;
   }

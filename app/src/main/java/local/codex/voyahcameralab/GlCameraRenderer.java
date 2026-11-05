@@ -11,13 +11,17 @@ import java.nio.*;
 
 final class GlCameraRenderer {
   interface Listener {void onFrame(long count);void onError(String error);void onSegmentSaved(Uri uri);void onRecordingFinished(Uri uri,String error);}
+  /** Receives small top-down RGBA copies of the output frame on the capture thread. */
+  interface FrameSampler {boolean wantsFrame();byte[] frameBuffer();void frameReady(byte[] rgba);void samplerFailed(String error);}
+  private static final long SAMPLE_INTERVAL_MS=200;
   final Surface cameraSurface;
   final FramePolicy policy;
   private final Context context;private final Listener listener;private final SurfaceTexture cameraTexture;
   private final Surface displaySurface;private EGLDisplay display;private EGLContext eglContext;private EGLConfig config;
   private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;private Uri lastSaved;
   private final float[] transform=new float[16];private final FloatBuffer vertices;
-  private int program,texture,position,coordinates,matrix,vertical,rotation,width,height;private long frames,lastReport;private boolean closed;
+  private int program,texture,position,coordinates,matrix,vertical,rotation,width,height,sampleFramebuffer,sampleTexture;private long frames,lastReport,lastSample;private boolean closed;
+  private volatile FrameSampler sampler;private ByteBuffer samplePixels;
   GlCameraRenderer(Context context,Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
     this.context=context;this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
     displaySurface=new Surface(output);
@@ -53,8 +57,12 @@ final class GlCameraRenderer {
   void resize(int width,int height){this.width=width;this.height=height;}
   private void draw(int width,int height,boolean fit){
     GLES20.glViewport(0,0,width,height);GLES20.glClearColor(0,0,0,1);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-    int[] viewport=fit?policy.fit(width,height):new int[]{0,0,width,height};GLES20.glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
-    GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture);
+    int[] viewport=fit?policy.fit(width,height):new int[]{0,0,width,height,0,width};
+    GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(viewport[4],viewport[1],viewport[5],viewport[3]);
+    drawQuad(viewport[0],viewport[1],viewport[2],viewport[3]);GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
+  }
+  private void drawQuad(int x,int y,int width,int height){
+    GLES20.glViewport(x,y,width,height);GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture);
     vertices.position(0);GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,16,vertices);GLES20.glEnableVertexAttribArray(position);
     vertices.position(2);GLES20.glVertexAttribPointer(coordinates,2,GLES20.GL_FLOAT,false,16,vertices);GLES20.glEnableVertexAttribArray(coordinates);
     GLES20.glUniformMatrix4fv(matrix,1,false,transform,0);GLES20.glUniform1f(rotation,policy.rotation);GLES20.glUniform2f(vertical,policy.cropBottom,policy.cropTop);
@@ -67,8 +75,39 @@ final class GlCameraRenderer {
       makeCurrent(preview);cameraTexture.updateTexImage();cameraTexture.getTransformMatrix(transform);
       draw(width,height,true);if(!EGL14.eglSwapBuffers(display,preview))throw new IllegalStateException("Preview swap failed");
       if(recorder!=null){makeCurrent(encoder);draw(policy.outputWidth,policy.outputHeight,false);EGLExt.eglPresentationTimeANDROID(display,encoder,recorder.clock.next(System.nanoTime())*1000);if(!EGL14.eglSwapBuffers(display,encoder))throw new IllegalStateException("Encoder swap failed");recorder.drain(false);}
+      sample();
       frames++;long now=SystemClock.elapsedRealtime();if(FrameHealth.reportDue(frames,now,lastReport)){lastReport=now;listener.onFrame(frames);}
     }catch(Exception failure){String error=failure instanceof java.io.IOException?failure.getMessage():"GPU/encoder: "+failure;if(recorder!=null)stopRecording(error);listener.onError(error);}
+  }
+  void setSampler(FrameSampler sampler){this.sampler=sampler;}
+  /** One bounded readback every SAMPLE_INTERVAL_MS. A failure stops sampling, never the recording. */
+  private void sample(){
+    FrameSampler target=sampler;if(target==null||!target.wantsFrame())return;
+    long now=SystemClock.elapsedRealtime();if(now-lastSample<SAMPLE_INTERVAL_MS)return;lastSample=now;
+    int w=AvmLayout.SAMPLE_WIDTH,h=AvmLayout.BUFFER_HEIGHT,stride=w*4,glyphH=AvmLayout.GLYPH_HEIGHT;
+    try{
+      makeCurrent(preview);if(sampleFramebuffer==0)createSampleTarget(w,h);
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,sampleFramebuffer);
+      drawQuad(0,glyphH,w,AvmLayout.SAMPLE_HEIGHT); // Bottom-up target: the rows above the glyph strip.
+      GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(0,0,AvmLayout.GLYPH_WIDTH,glyphH);
+      drawQuad(-AvmLayout.GLYPH_X,-(policy.outputHeight-AvmLayout.GLYPH_Y-glyphH),policy.outputWidth,policy.outputHeight);
+      GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
+      samplePixels.position(0);GLES20.glReadPixels(0,0,w,h,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,samplePixels);
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
+      byte[] rgba=target.frameBuffer();
+      for(int y=0;y<h;y++){samplePixels.position((h-1-y)*stride);samplePixels.get(rgba,y*stride,stride);}
+      target.frameReady(rgba);
+    }catch(RuntimeException failure){GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);sampler=null;target.samplerFailed(failure.toString());}
+  }
+  private void createSampleTarget(int w,int h){
+    int[] id=new int[1];GLES20.glGenTextures(1,id,0);sampleTexture=id[0];GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,sampleTexture);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_NEAREST);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_NEAREST);
+    GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,w,h,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null);
+    GLES20.glGenFramebuffers(1,id,0);sampleFramebuffer=id[0];GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,sampleFramebuffer);
+    GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER,GLES20.GL_COLOR_ATTACHMENT0,GLES20.GL_TEXTURE_2D,sampleTexture,0);
+    int complete=GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER);GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
+    if(complete!=GLES20.GL_FRAMEBUFFER_COMPLETE)throw new IllegalStateException("Sample framebuffer 0x"+Integer.toHexString(complete));
+    samplePixels=ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.nativeOrder());
   }
   boolean isRecording(){return recorder!=null;}
   void startRecording(String cameraId,int segmentSeconds) throws Exception {
@@ -86,9 +125,9 @@ final class GlCameraRenderer {
     listener.onRecordingFinished(lastSaved,failure);
   }
   void close(){
-    if(closed)return;closed=true;stopRecording();
+    if(closed)return;closed=true;sampler=null;stopRecording();
     cameraTexture.setOnFrameAvailableListener(null);cameraSurface.release();cameraTexture.release();
-    try{makeCurrent(preview);clearPreview();GLES20.glDeleteTextures(1,new int[]{texture},0);GLES20.glDeleteProgram(program);}catch(Exception ignored){}
+    try{makeCurrent(preview);clearPreview();if(sampleFramebuffer!=0){GLES20.glDeleteFramebuffers(1,new int[]{sampleFramebuffer},0);GLES20.glDeleteTextures(1,new int[]{sampleTexture},0);}GLES20.glDeleteTextures(1,new int[]{texture},0);GLES20.glDeleteProgram(program);}catch(Exception ignored){}
     EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT);
     EGL14.eglDestroySurface(display,preview);EGL14.eglDestroyContext(display,eglContext);EGL14.eglReleaseThread();EGL14.eglTerminate(display);displaySurface.release();
   }

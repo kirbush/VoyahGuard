@@ -145,8 +145,8 @@ public final class PowerHoldBridge {
     watchdog.start();
     int exit = 1;
     try {
-      if (android.os.Process.myUid() != 0) throw new IllegalStateException("root");
       String operation = args[0];
+      if (!"status".equals(operation) && android.os.Process.myUid() != 0) throw new IllegalStateException("root");
       if (!("status".equals(operation) && args.length == 3)
           && !("acquire".equals(operation) && args.length == 5)
           && !("release".equals(operation) && args.length == 5))
@@ -191,6 +191,8 @@ public final class PowerHoldBridge {
       exit = 0;
     } catch (Throwable failure) {
       // Never expose arbitrary OEM output/property values to the UI or offer raw retry commands.
+      Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+      android.util.Log.w("PowerHoldBridge", cause.toString());
       System.out.println("PH1\tERROR\tunavailable-or-incomplete");
       System.out.flush();
     } finally {

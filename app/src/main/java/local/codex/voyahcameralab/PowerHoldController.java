@@ -303,7 +303,9 @@ final class PowerHoldController {
     if (apk == null || !apk.startsWith("/") || apk.indexOf(':') >= 0 || apk.indexOf('\n') >= 0)
       throw new IOException("Invalid own APK path");
     List<String> command = new ArrayList<>();
-    command.add("/system/xbin/su"); command.add("0"); command.add("/system/bin/app_process");
+    // Reading needs no root; su is unreachable for this UID, so only writes keep asking for it.
+    if (!"status".equals(operation)) { command.add("/system/xbin/su"); command.add("0"); }
+    command.add("/system/bin/app_process");
     command.add("-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH);
     command.add("/system/bin"); command.add("local.codex.voyahcameralab.PowerHoldBridge");
     command.add(operation); command.add(Integer.toString(location));

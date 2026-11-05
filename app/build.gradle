@@ -1,6 +1,8 @@
 plugins { id 'com.android.application' }
 
 def customKeystore = providers.environmentVariable('VOYAH_SIGNING_KEYSTORE').orNull
+def generatedNative = layout.buildDirectory.dir('generated/avmview')
+interface ExecInjection { @javax.inject.Inject ExecOperations getExec() }
 android {
     namespace 'local.codex.voyahcameralab'
     compileSdk 30
@@ -9,10 +11,11 @@ android {
         applicationId 'local.codex.voyahcameralab'
         minSdk 30
         targetSdk 30
-        versionCode 6
-        versionName '0.5.1-lite-alpha'
+        versionCode 7
+        versionName '0.6-lite-alpha'
         testApplicationId 'local.codex.voyahcameratest'
         testInstrumentationRunner 'local.codex.voyahcameratest.Smoke'
+        ndk { abiFilters 'arm64-v8a' } // The head unit; the OpenCV AAR ships other ABIs too.
     }
     signingConfigs {
         if (customKeystore) {
@@ -32,7 +35,36 @@ android {
     // Sideloaded Android 11 head-unit app; Google Play target-level policy is inapplicable.
     // Retain all other release lint checks and the firmware-compatible API 30 target.
     lint { disable 'ExpiredTargetSdkVersion' }
+    packaging { jniLibs { useLegacyPackaging = true } } // Keeps OpenCV compressed inside the APK.
+    sourceSets.main.jniLibs.srcDir(generatedNative)
 }
+
+dependencies { implementation 'org.opencv:opencv:4.12.0' }
+
+def ndkPinned = '27.2.12479018'
+def nativeTask = tasks.register('buildAvmViewNative') {
+    def exec = objects.newInstance(ExecInjection).exec
+    inputs.files(fileTree('src/main/cpp')).withPropertyName('nativeSources')
+    inputs.property('ndkVersion', ndkPinned)
+    outputs.dir(generatedNative)
+    doLast {
+        String override = providers.gradleProperty('avmNdkDir').orElse(providers.environmentVariable('AVM_NDK_DIR')).orNull
+        File ndk = override ? file(override) : new File(android.sdkDirectory, "ndk/${ndkPinned}")
+        boolean windows = System.getProperty('os.name').toLowerCase().contains('windows')
+        String host = windows ? 'windows-x86_64' : System.getProperty('os.name').toLowerCase().contains('mac') ? 'darwin-x86_64' : 'linux-x86_64'
+        File prebuilt = new File(ndk, 'bin/clang' + (windows ? '.exe' : '')).isFile() ? ndk : new File(ndk, "toolchains/llvm/prebuilt/${host}")
+        File clang = new File(prebuilt, 'bin/clang' + (windows ? '.exe' : ''))
+        if (!clang.isFile()) throw new GradleException("Install NDK ${ndkPinned} or set AVM_NDK_DIR")
+        File output = generatedNative.get().dir('arm64-v8a').asFile
+        output.mkdirs()
+        exec.exec {
+            commandLine clang, '--target=aarch64-linux-android30', '--sysroot=' + new File(prebuilt, 'sysroot'),
+                '-O2', '-Wall', '-Wextra', '-Werror', '-fPIC', '-shared', '-unwindlib=none', '-Wl,-z,relro,-z,now',
+                '-o', new File(output, 'libavmview.so'), file('src/main/cpp/avm_view.c')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn nativeTask }
 
 def policyClasses = layout.buildDirectory.dir('policy-classes')
 def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
@@ -44,12 +76,15 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         'src/main/java/local/codex/voyahcameralab/StoragePolicy.java',
         'src/main/java/local/codex/voyahcameralab/SegmentPolicy.java',
         'src/main/java/local/codex/voyahcameralab/PowerHoldPolicy.java',
+        'src/main/java/local/codex/voyahcameralab/AvmLayout.java',
+        'src/main/java/local/codex/voyahcameralab/AdaptiveViewPolicy.java',
         '../tests/java/local/codex/voyahcameralab/PolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/LaunchPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/StoragePolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/SegmentPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/RecordingStoreTest.java',
         '../tests/java/local/codex/voyahcameralab/PowerHoldPolicyTest.java',
+        '../tests/java/local/codex/voyahcameralab/AdaptiveViewPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AllPolicyTests.java')
     classpath = files()
     destinationDirectory.set(policyClasses)

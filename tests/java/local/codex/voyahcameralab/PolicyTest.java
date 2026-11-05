@@ -43,6 +43,14 @@ public final class PolicyTest {
     check(fit[0]==0&&fit[1]==18&&fit[2]==1000&&fit[3]==563,"Letterbox without distortion");
     int[] portraitFit=rotated.fit(1000,600);
     check(portraitFit[0]==331&&portraitFit[1]==0&&portraitFit[2]==338&&portraitFit[3]==600,"Portrait source is pillarboxed without distortion");
+    FramePolicy avm=FramePolicy.forCapture("1",1920,1200,0,false);
+    check(avm.anamorphic&&avm.outputWidth==1920&&avm.outputHeight==1200,"Recording keeps the full AVM frame and its buttons");
+    int[] avmFit=avm.fit(1760,720);
+    check(avmFit[0]==-160&&avmFit[1]==0&&avmFit[2]==1920&&avmFit[3]==720,"AVM preview restores 8:3 and pushes the toolbar off the left edge");
+    check(avmFit[4]==0&&avmFit[5]==1760,"Only the picture columns remain visible");
+    int[] avmWide=avm.fit(1770,675);
+    check(avmWide[4]==60&&avmWide[5]==1650&&avmWide[2]==1800&&avmWide[0]==-90,"The clip hides the toolbar inside a pillarboxed window too");
+    check(FramePolicy.forCapture("1",1920,1080,0,false).fit(1920,1080)[4]==0,"Other sizes stay uncropped");
     TimestampClock time=new TimestampClock(1000000000L);
     check(time.next(1000000000L)==0,"First timestamp");
     check(time.next(1000000000L)==1,"Duplicate clock must advance");
