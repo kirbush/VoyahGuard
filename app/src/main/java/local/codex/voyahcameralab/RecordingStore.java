@@ -17,6 +17,7 @@ final class RecordingStore {
   private final File directory;
   private final SharedPreferences preferences;
   private File latestCompleted;
+  private String activeSession;
 
   static final class Snapshot {
     final long totalBytes,availableBytes,recordingBytes;
@@ -35,6 +36,11 @@ final class RecordingStore {
   RecordingStore(Context context) throws IOException {
     directory=directory(context);
     preferences=context.getSharedPreferences("camera",Context.MODE_PRIVATE);
+  }
+
+  /** A recorder names its session so that its own fragments never count as abandoned. */
+  RecordingStore(Context context,String session) throws IOException {
+    this(context);activeSession=session;
   }
 
   static File directory(Context context) throws IOException {
@@ -62,7 +68,7 @@ final class RecordingStore {
   }
 
   synchronized void ensureSpace(File protectedFile) throws IOException {
-    StoragePolicy.ensureSpace(directory,protectedFile==null?latestCompleted:protectedFile,this::space,cycle(),maximumPercent());
+    StoragePolicy.ensureSpace(directory,protectedFile==null?latestCompleted:protectedFile,this::space,cycle(),maximumPercent(),activeSession,System.currentTimeMillis());
   }
 
   /** Enforce pressure during long clips too; only older completed clips are eligible. */

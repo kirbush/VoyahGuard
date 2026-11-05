@@ -53,6 +53,15 @@ public final class PolicyTest {
     check(!gate.accepts(old),"Late onOpened after close must be rejected");
     int current=gate.begin();check(!gate.accepts(old)&&gate.accepts(current),"Late callback cannot replace a newer session");
     FrameHealth health=new FrameHealth();check(!health.stalled(8000),"Initial no-frame timeout is separate");health.frame(9000);check(!health.stalled(13000)&&health.stalled(14000),"Interrupted stream becomes visible after five seconds");health.frame(15000);check(!health.stalled(15000),"Recovered frames clear stream interruption");health.reset();check(health.age(16000)==-1,"Closed stream forgets old frame time");
+    for(int intervalMs:new int[]{33,200,500,1500}){
+      FrameHealth slow=new FrameHealth();long lastReport=0;
+      for(long frame=1,now=10000;frame<=400;frame++,now+=intervalMs){
+        if(FrameHealth.reportDue(frame,now,lastReport)){lastReport=now;slow.frame(now);}
+        check(!slow.stalled(now),"A slow live stream is not a stall: "+intervalMs+" ms between frames");
+      }
+    }
+    check(FrameHealth.reportDue(1,5,4)&&FrameHealth.reportDue(3,5,4),"Frames one and three always reach the UI for the start gate");
+    check(!FrameHealth.reportDue(4,1033,1000),"A normal stream is not reported on every frame");
     System.out.println("PASS: full-frame geometry, timestamps, late callbacks and frame-stall recovery");
   }
 }

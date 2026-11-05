@@ -18,6 +18,14 @@ public final class LaunchPolicyTest {
     check(!policy.takeAutoRecord(),"Activity recreation after explicit stop stays stopped");
     policy.restore(true);
     check(policy.takeAutoRecord(),"Recreation while still waiting for permission preserves the one request");
+    LaunchPolicy permission=new LaunchPolicy();
+    permission.newLaunch(true);
+    check(permission.takePermissionRequest(),"A launch without camera access asks once");
+    check(!permission.takePermissionRequest(),"Resume after a denial must not reopen the system dialog forever");
+    permission.stop();
+    check(!permission.takePermissionRequest(),"A denied launch stays quiet after the pending record is cancelled");
+    permission.newLaunch(true);
+    check(permission.takePermissionRequest(),"Start is an explicit new request and may ask again");
     System.out.println("PASS: one-shot launch recording and explicit Stop");
   }
 }

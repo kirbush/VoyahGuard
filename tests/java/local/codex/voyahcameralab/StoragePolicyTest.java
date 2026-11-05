@@ -13,6 +13,11 @@ public final class StoragePolicyTest {
     check(!StoragePolicy.hasSpace(1000*M,300*M,20),"Low corrupt percentage clamps to 50");
     check(!StoragePolicy.hasSpace(10000*M,400*M,100),"High corrupt percentage clamps to 95");
     check(StoragePolicy.hasSpace(Long.MAX_VALUE,Long.MAX_VALUE/2+1,50),"Large volumes do not overflow");
+    String[] all=StoragePolicy.knownColumns(null,"_display_name","_size");
+    check(all.length==2&&"_display_name".equals(all[0])&&"_size".equals(all[1]),"No projection returns every readable column");
+    String[] asked=StoragePolicy.knownColumns(new String[]{"_data","_size","title","_display_name"},"_display_name","_size");
+    check(asked.length==2&&"_size".equals(asked[0])&&"_display_name".equals(asked[1]),"Extra player columns are dropped, not thrown across Binder");
+    check(StoragePolicy.knownColumns(new String[]{"_data"},"_display_name","_size").length==0,"Only unknown columns give an empty projection");
     System.out.println("PASS: storage thresholds, physical reserve, invalid statistics and overflow");
   }
 }

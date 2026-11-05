@@ -18,13 +18,15 @@ import java.util.concurrent.TimeUnit;
 final class PowerHoldController {
   private static final long CALL_NANOS = TimeUnit.MILLISECONDS.toNanos(7500);
   private static final String PENDING = "pending";
+  private static final int RELEASE_CHECKS = 6;
   private final Context context;
   private final SharedPreferences journal;
   private final String session = UUID.randomUUID().toString();
   private final PowerHoldPolicy.OwnershipGuard ownership = new PowerHoldPolicy.OwnershipGuard(session);
   private volatile String cached = "Power Hold: выключен";
   private volatile boolean owned;
-  private boolean recovered, releaseAttempted, leaseMatched, acquireFailed, cleanupSubmitted;
+  private volatile int releaseChecks;
+  private boolean recovered, releaseStarted, releaseAttempted, leaseMatched, acquireFailed, cleanupSubmitted;
   private PowerHoldPolicy.Lease lease;
 
   PowerHoldController(Context context) {
@@ -38,9 +40,23 @@ final class PowerHoldController {
   // These two UI reads deliberately do not share the executor's blocking monitor.
   String statusText() { return cached; }
   boolean ownsHold() { return owned; }
+  boolean journalPending() { return journal.getBoolean(PENDING, false); }
+  /** True while release() is still worth repeating: it stays read-only once a disable was sent. */
+  boolean awaitingRelease() { return releaseChecks > 0; }
 
   private static String recoveredWarning() {
-    return "Power Hold: недоступен — незавершённый журнал прошлого процесса; проверьте штатный режим вручную";
+    return "Power Hold: недоступен — незавершённый журнал прошлого процесса; проверьте штатный режим вручную. Журнал снимется после перезагрузки ГУ";
+  }
+  /** Read-only: a process that died with the ГУ must not block Power Hold until app data is wiped. */
+  private void retireExpiredJournal(long deadline) {
+    if (lease != null || !journal.getBoolean(PENDING, false)) return;
+    try {
+      PowerHoldPolicy.Snapshot current = invoke("status", deadline, null, 0).snapshot;
+      if (PowerHoldPolicy.journalExpired(journal.getString("original", ""), current) && journal.edit().clear().commit()) {
+        recovered = false;
+        cached = display(PowerHoldPolicy.state(current));
+      }
+    } catch (Exception failure) { /* the journal stays and recoveredJournal() reports it */ }
   }
   private boolean recoveredJournal() {
     // Re-read on every operation, even if this controller was constructed before
@@ -85,6 +101,8 @@ final class PowerHoldController {
   private String acquireLocked(int minutes, long deadline) {
     try {
       PowerHoldPolicy.rawMinutes(minutes);
+      retireExpiredJournal(deadline);
+      if (lease != null && releaseAttempted) refreshLocked(deadline); // the queued disable may have landed since Stop
       if (recoveredJournal() || lease != null) return cached;
       Reply status = invoke("status", deadline, null, 0);
       PowerHoldPolicy.Snapshot before = status.snapshot;
@@ -138,13 +156,14 @@ final class PowerHoldController {
 
   private String refreshLocked(long deadline) {
     try {
+      retireExpiredJournal(deadline);
       if (recoveredJournal()) return cached;
       Reply result = invoke("status", deadline, null, 0);
       PowerHoldPolicy.Snapshot current = result.snapshot;
       if (lease == null) cached = display(PowerHoldPolicy.state(current));
       else if (releaseAttempted) {
         if (restored(current) && (!acquireFailed || cleanupSubmitted)) finishJournal("Power Hold: выключен");
-        else cached = "Power Hold: ошибка отключения — результат не подтверждён; проверьте штатный режим вручную";
+        else if (releaseChecks == 0) cached = "Power Hold: ошибка отключения — результат не подтверждён; проверьте штатный режим вручную";
       } else {
         PowerHoldPolicy.ReleaseDecision decision = lease.releaseDecision(current);
         if (decision == PowerHoldPolicy.ReleaseDecision.RELEASE) {
@@ -168,14 +187,21 @@ final class PowerHoldController {
 
   private String releaseLocked(long deadline) {
     try {
-      if (recoveredJournal() || lease == null) return cached;
+      if (recoveredJournal() || lease == null) {
+        releaseChecks = 0;
+        return cached;
+      }
+      if (!releaseStarted) {
+        releaseStarted = true;
+        releaseChecks = RELEASE_CHECKS;
+      } else if (releaseChecks > 0) releaseChecks--;
       if (lease.writeAuthorityRevoked()) {
         owned = false;
+        releaseChecks = 0;
         cached = "Power Hold: недоступен — после отмены или внешнего изменения право управления отозвано; журнал сохранён, отключение вручную";
         return cached;
       }
       if (releaseAttempted) return refreshLocked(deadline); // read-only confirmation, never repeat a queued disable
-      releaseAttempted = true;
       // Use this process's observed-duration history before invoking the write helper.
       // A fresh helper cannot know that TIME returned to the original value after it
       // had previously matched our request. Both calls share the same 7.5s deadline.
@@ -197,6 +223,9 @@ final class PowerHoldController {
         return cached;
       }
       if (!ownJournalForMutation()) return cached;
+      // Set only here: a lagging TIME or a failed status read has sent nothing and may be checked again.
+      releaseAttempted = true;
+      releaseChecks = RELEASE_CHECKS;
       Reply result = invoke("release", deadline, lease.original, lease.minutes);
       if ("ENDED".equals(result.code) || "CHANGED".equals(result.code) || "UNKNOWN".equals(result.code))
         lease.releaseDecision(result.snapshot); // reclassify with history; a fresh helper has never seen our requested TIME
@@ -207,13 +236,18 @@ final class PowerHoldController {
         finishJournal("Power Hold: выключен — уже завершён штатно, восстановление не требуется");
       } else if ("CHANGED".equals(result.code) && leaseMatched && !acquireFailed) {
         finishJournal(display(PowerHoldPolicy.state(result.snapshot)) + " — изменён вне приложения, оставлен без изменений");
+      } else if ("RELEASE_QUEUED".equals(result.code)) {
+        owned = false;
+        cached = "Power Hold: отключение запрошено — штатный статус ещё не подтвердил";
       } else {
         owned = false;
         cached = "Power Hold: ошибка отключения — результат или владение не подтверждены; проверьте штатный режим вручную";
       }
     } catch (Exception failure) {
       owned = false;
-      cached = "Power Hold: ошибка отключения — частичное изменение возможно; журнал сохранён, проверьте штатный режим вручную";
+      cached = releaseAttempted
+          ? "Power Hold: ошибка отключения — частичное изменение возможно; журнал сохранён, проверьте штатный режим вручную"
+          : "Power Hold: ошибка отключения — состояние не прочитано, команда не отправлена; журнал сохранён";
     }
     return cached;
   }
@@ -228,7 +262,8 @@ final class PowerHoldController {
     owned = false;
     if (journal.edit().clear().commit()) {
       lease = null;
-      releaseAttempted = leaseMatched = acquireFailed = cleanupSubmitted = false;
+      releaseStarted = releaseAttempted = leaseMatched = acquireFailed = cleanupSubmitted = false;
+      releaseChecks = 0;
       cached = text;
     } else {
       releaseAttempted = true;

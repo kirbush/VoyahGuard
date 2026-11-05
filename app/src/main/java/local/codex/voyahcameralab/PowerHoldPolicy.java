@@ -95,6 +95,13 @@ final class PowerHoldPolicy {
         && snapshot.switchValue == 0 && !"on".equals(snapshot.property);
   }
 
+  /** A lease ends with its boot (see Lease.inspect), so such a journal is only retired, never replayed. */
+  static boolean journalExpired(String originalWire, Snapshot current) {
+    if (current == null || !current.usable()) return false;
+    try { return !equal(Snapshot.parse(originalWire).boot, current.boot); }
+    catch (IllegalArgumentException unreadable) { return false; }
+  }
+
   static State state(Snapshot snapshot) {
     if (snapshot == null || !snapshot.usable()) return State.UNAVAILABLE;
     if (snapshot.switchValue == 1) return State.ACTIVE;
