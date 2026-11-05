@@ -8,6 +8,8 @@ public final class AllPolicyTests {
     StoragePolicyTest.main(args);
     SegmentPolicyTest.main(args);
     VideoTimelineTest.main(args);
+    WarningPolicyTest.main(args);
+    ParkedPolicyTest.main(args);
     PowerHoldPolicyTest.main(args);
     AdaptiveViewPolicyTest.main(args);
     System.out.println("PASS: all Sentry Lite software policies (hardware compatibility untested)");

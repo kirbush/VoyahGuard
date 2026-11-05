@@ -17,6 +17,10 @@
     <item name="storage_percent_picker" type="id"/>
     <item name="events_only_checkbox" type="id"/>
     <item name="follow_button" type="id"/>
+    <item name="voice_warning_checkbox" type="id"/>
+    <item name="voice_test_button" type="id"/>
+    <item name="climate_off_checkbox" type="id"/>
+    <item name="screens_off_checkbox" type="id"/>
     <item name="padding_correction_checkbox" type="id"/>
     <item name="adaptive_checkbox" type="id"/>
     <item name="adaptive_scenario_picker" type="id"/>

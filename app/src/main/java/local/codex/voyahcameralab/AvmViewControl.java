@@ -83,13 +83,23 @@ final class AvmViewControl {
   private static boolean request(int value) {
     String reply = run("/system/bin/service", "call", "qg.canbus", "58", "i32", "1", "i32", "838", "i32", "1055", "i32", String.valueOf(value));
     if (reply.contains("Parcel(00000000")) return true;
-    if (apk == null || apk.indexOf(':') >= 0) return false;
-    return run("/system/bin/app_process", "-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH,
-        "/system/bin", "local.codex.voyahcameralab.AvmBridge", String.valueOf(value)).contains(AvmBridge.DONE);
+    return bridge(AvmBridge.class.getName(), String.valueOf(value)).contains(AvmBridge.DONE);
+  }
+
+  /** One of this APK's fixed entry points in its own app_process, or "" without an APK path. */
+  static String bridge(String entry, String... arguments) {
+    if (apk == null || apk.indexOf(':') >= 0) return "";
+    String[] command = new String[4 + arguments.length];
+    command[0] = "/system/bin/app_process";
+    command[1] = "-Djava.class.path=" + apk + ":" + PowerHoldBridge.API_PATH + ":" + PowerHoldBridge.VEHICLE_PATH;
+    command[2] = "/system/bin";
+    command[3] = entry;
+    System.arraycopy(arguments, 0, command, 4, arguments.length);
+    return run(command);
   }
 
   /** Bounded even if the child never writes or exits: the pipe is read on its own daemon thread. */
-  private static String run(String... command) {
+  static String run(String... command) {
     Process process = null;
     try {
       process = new ProcessBuilder(Arrays.asList(command)).redirectErrorStream(true).start();

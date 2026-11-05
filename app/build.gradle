@@ -76,6 +76,8 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         'src/main/java/local/codex/voyahcameralab/StoragePolicy.java',
         'src/main/java/local/codex/voyahcameralab/SegmentPolicy.java',
         'src/main/java/local/codex/voyahcameralab/VideoTimeline.java',
+        'src/main/java/local/codex/voyahcameralab/WarningPolicy.java',
+        'src/main/java/local/codex/voyahcameralab/ParkedPolicy.java',
         'src/main/java/local/codex/voyahcameralab/PowerHoldPolicy.java',
         'src/main/java/local/codex/voyahcameralab/AvmLayout.java',
         'src/main/java/local/codex/voyahcameralab/AdaptiveViewPolicy.java',
@@ -84,6 +86,8 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         '../tests/java/local/codex/voyahcameralab/StoragePolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/SegmentPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/VideoTimelineTest.java',
+        '../tests/java/local/codex/voyahcameralab/WarningPolicyTest.java',
+        '../tests/java/local/codex/voyahcameralab/ParkedPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/PowerHoldPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AdaptiveViewPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AllPolicyTests.java')
