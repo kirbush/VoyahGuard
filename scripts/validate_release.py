@@ -17,6 +17,7 @@ for key in ('apk', 'checksums', 'notes'):
     path = (ROOT / metadata[key]).resolve()
     assert path.is_relative_to(ROOT) and path.is_file(), f'Invalid {key} path'
 apk = ROOT / metadata['apk']
+assert apk.name.endswith('-' + version.split('-')[0] + '.apk'), 'APK name does not match application version'
 checksum_line = (ROOT / metadata['checksums']).read_text(encoding='ascii').strip().split()
 assert len(checksum_line) == 2 and checksum_line[1] == apk.name, 'Unexpected checksum manifest'
 assert hashlib.sha256(apk.read_bytes()).hexdigest() == checksum_line[0], 'APK checksum mismatch'
