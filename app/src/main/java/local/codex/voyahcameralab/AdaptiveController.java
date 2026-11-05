@@ -67,10 +67,15 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     wanted = false; active = false;
     generation++;
     analysis.post(this::finishRun);
+    boolean wasThreeD = threeD;
+    int back = home;
     control.execute(() -> {
       try {
-        if (commanded) { if (threeD) AvmViewControl.sendButton(home); else AvmViewControl.send(home); }
-        if (opened) AvmViewControl.close();
+        // Never command the car outside P: a 360 this run opened then stays for the driver to close.
+        if ((commanded || opened) && AvmViewControl.parked()) {
+          if (commanded) { if (wasThreeD) AvmViewControl.sendButton(back); else AvmViewControl.send(back); }
+          if (opened) AvmViewControl.close();
+        }
       } catch (Exception error) { Log.w(TAG, "Return", error); }
       commanded = false; opened = false;
     });
@@ -87,6 +92,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     try {
       String reason = AvmViewControl.unavailableReason();
       if (reason.isEmpty() && !AvmViewControl.parked()) reason = "нужен режим P";
+      if (run != generation) return;
       if (reason.isEmpty() && !AvmViewControl.showing()) {
         publish("Адаптивный вид: открытие 360");
         opened = true;
@@ -170,7 +176,8 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
 
   private void command(int run, AdaptiveViewPolicy current, int view) {
     control.execute(() -> {
-      if (run != generation) return;
+      if (run != generation || !active) return;
+      if (!AvmViewControl.parked()) { halt(run, "машина не в P"); return; }
       try {
         commanded = true;
         boolean sent = view == AvmLayout.TOGGLE_2D ? AvmViewControl.toggleMode() : threeD ? AvmViewControl.sendButton(view) : AvmViewControl.send(view);

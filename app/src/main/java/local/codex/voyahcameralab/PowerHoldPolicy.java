@@ -92,6 +92,10 @@ final class PowerHoldPolicy {
     }
   }
 
+  /** The OEM listener writes "off" over the empty value left by boot: both mean not prepared. */
+  static boolean sameProperty(String left, String right) { return normal(left).equals(normal(right)); }
+  private static String normal(String value) { return value == null || value.isEmpty() ? "off" : value; }
+
   static boolean canAcquire(Snapshot snapshot) {
     return snapshot != null && snapshot.usable() && snapshot.safeParking()
         && snapshot.switchValue == 0 && !"on".equals(snapshot.property);

@@ -96,6 +96,8 @@ public final class PowerHoldPolicyTest {
     for (int sw : new int[]{-1, 2})
       check(!PowerHoldPolicy.canAcquire(sample(sw, 4, "", "Parking", 80, 0, "boot-a")), "Unknown switch denied");
     check(!PowerHoldPolicy.canAcquire(sample(0, 16, "", "Parking", 80, 0, "boot-a")), "Invalid duration denied");
+    check(PowerHoldPolicy.sameProperty("", "off") && PowerHoldPolicy.sameProperty("off", "") && PowerHoldPolicy.sameProperty(null, "off"), "An empty boot value and off both mean not prepared");
+    check(!PowerHoldPolicy.sameProperty("on", "off") && !PowerHoldPolicy.sameProperty("", "on"), "A prepared hold differs from an idle one");
     PowerHoldPolicy.Snapshot h97x = sample(0, -1, "off", "Parking", 80, 0, "boot-a");
     check(PowerHoldPolicy.canAcquire(h97x), "H97X never reports TIME, the hold must still start");
     PowerHoldPolicy.Lease unreported = new PowerHoldPolicy.Lease(h97x, 30);

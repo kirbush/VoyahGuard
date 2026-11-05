@@ -93,11 +93,12 @@ final class GlCameraRenderer {
       drawQuad(-AvmLayout.GLYPH_X,-(AvmLayout.SOURCE_HEIGHT-AvmLayout.GLYPH_Y-glyphH),AvmLayout.SOURCE_WIDTH,AvmLayout.SOURCE_HEIGHT);
       GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
       samplePixels.position(0);GLES20.glReadPixels(0,0,w,h,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,samplePixels);
+      int error=GLES20.glGetError();if(error!=GLES20.GL_NO_ERROR)throw new IllegalStateException("Sample read 0x"+Integer.toHexString(error));
       GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
       byte[] rgba=target.frameBuffer();
       for(int y=0;y<h;y++){samplePixels.position((h-1-y)*stride);samplePixels.get(rgba,y*stride,stride);}
       target.frameReady(rgba);
-    }catch(RuntimeException failure){GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);sampler=null;target.samplerFailed(failure.toString());}
+    }catch(RuntimeException failure){GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);for(int i=0;i<8&&GLES20.glGetError()!=GLES20.GL_NO_ERROR;i++);sampler=null;target.samplerFailed(failure.toString());}
   }
   private void createSampleTarget(int w,int h){
     int[] id=new int[1];GLES20.glGenTextures(1,id,0);sampleTexture=id[0];GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,sampleTexture);

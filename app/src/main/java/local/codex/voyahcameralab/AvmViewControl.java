@@ -1,9 +1,10 @@
 package local.codex.voyahcameralab;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -13,7 +14,7 @@ import java.util.concurrent.TimeUnit;
  */
 final class AvmViewControl {
   private static final String PRODUCT = "f6811";
-  private static final long PRESS_MS = 120, SECOND_TAP_MS = 300, COMMAND_TIMEOUT_MS = 3000;
+  private static final long PRESS_MS = 120, SECOND_TAP_MS = 300, COMMAND_TIMEOUT_MS = 5000;
   private static final int TOUCH_MODE = 4, TOUCH_3D = 5;
   private static final long OPEN_PULSE_MS = 3000;
   private static final int AVM_OPEN = 1, AVM_CLOSE = 2, AVM_IDLE = 0;
@@ -87,21 +88,27 @@ final class AvmViewControl {
         "/system/bin", "local.codex.voyahcameralab.AvmBridge", String.valueOf(value)).contains(AvmBridge.DONE);
   }
 
+  /** Bounded even if the child never writes or exits: the pipe is read on its own daemon thread. */
   private static String run(String... command) {
-    List<String> arguments = Arrays.asList(command);
     Process process = null;
     try {
-      process = new ProcessBuilder(arguments).redirectErrorStream(true).start();
-      StringBuilder output = new StringBuilder();
-      try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-        for (String line; (line = reader.readLine()) != null && output.length() < 4096; ) output.append(line).append('\n');
-      }
+      process = new ProcessBuilder(Arrays.asList(command)).redirectErrorStream(true).start();
+      InputStream stream = process.getInputStream();
+      StringBuffer output = new StringBuffer();
+      Thread reader = new Thread(() -> {
+        try (BufferedReader lines = new BufferedReader(new InputStreamReader(stream))) {
+          for (String line; (line = lines.readLine()) != null && output.length() < 4096; ) output.append(line).append('\n');
+        } catch (IOException closed) { /* the partial output is judged by the caller */ }
+      }, "avm-command");
+      reader.setDaemon(true);
+      reader.start();
       if (!process.waitFor(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return "";
+      reader.join(200);
       return output.toString().trim();
     } catch (Exception error) {
       return "";
     } finally {
-      if (process != null) process.destroy();
+      if (process != null) process.destroyForcibly();
     }
   }
 }
