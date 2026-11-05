@@ -11,8 +11,8 @@ android {
         applicationId 'local.codex.voyahcameralab'
         minSdk 30
         targetSdk 30
-        versionCode 7
-        versionName '0.6-beta'
+        versionCode 8
+        versionName '0.7-beta'
         testApplicationId 'local.codex.voyahcameratest'
         testInstrumentationRunner 'local.codex.voyahcameratest.Smoke'
         ndk { abiFilters 'arm64-v8a' } // The head unit; the OpenCV AAR ships other ABIs too.
@@ -75,6 +75,7 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         'src/main/java/local/codex/voyahcameralab/LaunchPolicy.java',
         'src/main/java/local/codex/voyahcameralab/StoragePolicy.java',
         'src/main/java/local/codex/voyahcameralab/SegmentPolicy.java',
+        'src/main/java/local/codex/voyahcameralab/VideoTimeline.java',
         'src/main/java/local/codex/voyahcameralab/PowerHoldPolicy.java',
         'src/main/java/local/codex/voyahcameralab/AvmLayout.java',
         'src/main/java/local/codex/voyahcameralab/AdaptiveViewPolicy.java',
@@ -82,7 +83,7 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         '../tests/java/local/codex/voyahcameralab/LaunchPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/StoragePolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/SegmentPolicyTest.java',
-        '../tests/java/local/codex/voyahcameralab/RecordingStoreTest.java',
+        '../tests/java/local/codex/voyahcameralab/VideoTimelineTest.java',
         '../tests/java/local/codex/voyahcameralab/PowerHoldPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AdaptiveViewPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AllPolicyTests.java')

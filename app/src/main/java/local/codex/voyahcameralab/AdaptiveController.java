@@ -15,12 +15,20 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Runs the adaptive view mode beside a recording. Frames arrive at most at the sampling rate
- * into one slot, so a slow analysis drops frames and can never delay the encoder. Any failure
- * here stops the automatic views and leaves the recording alone.
+ * Runs the view following and the motion detector beside the camera. Frames arrive at most at
+ * the sampling rate into one slot, so a slow analysis drops frames and can never delay the
+ * encoder. Any failure here stops the automatic views and leaves the recording alone. Closing
+ * the 360 screen stops only the following: the detector keeps looking at the panorama, but what
+ * it misses then proves nothing, because the panorama is not known to stay live on a hidden screen.
  */
 final class AdaptiveController implements GlCameraRenderer.FrameSampler {
-  interface Listener {void onAdaptiveStatus(String text);}
+  interface Listener {
+    void onAdaptiveStatus(String text);
+    /** Somebody was near the car at this moment. Analysis thread. */
+    void onMotion(long now);
+    /** Whether the absence of onMotion means anything. Any thread. */
+    void onWatching(boolean trusted, long now);
+  }
   private static final String TAG = "SentryAdaptive";
   private static final long GUARD_MS = 5000;
   private static final int LOG_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -35,13 +43,14 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private final Runnable analyse = this::analyse;
 
   private volatile int generation;
-  private volatile boolean active, wanted, threeD, halted;
+  private volatile boolean active, detecting, wanted, threeD, halted;
   private boolean opened, commanded;
   private AdaptiveViewPolicy policy;
   private MotionAnalyzer analyzer;
   private BufferedWriter log;
   private int logged;
-  private long lastGuard, dropped, samples;
+  private long lastGuard, dropped, samples, detectFrom;
+  private int motionStreak;
   private volatile int home = AvmLayout.FRONT;
   private String status = "";
 
@@ -52,7 +61,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     analysis = new Handler(analysisThread.getLooper());
   }
 
-  /** Main thread, after a recording has started. */
+  /** Main thread, once the camera delivers frames. */
   void start(boolean threeD) {
     if (wanted) return;
     wanted = true; this.threeD = threeD; halted = false;
@@ -64,15 +73,16 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   /** Main thread. Ends the owned control: home view restored, 360 closed if this run opened it. */
   void stop() {
     if (!wanted) return;
-    wanted = false; active = false;
+    wanted = false; active = false; detecting = false;
     generation++;
+    listener.onWatching(false, SystemClock.elapsedRealtime());
     analysis.post(this::finishRun);
     boolean wasThreeD = threeD;
     int back = home;
     control.execute(() -> {
       try {
         // Never command the car outside P: a 360 this run opened then stays for the driver to close.
-        if ((commanded || opened) && AvmViewControl.parked()) {
+        if ((commanded || opened) && AvmViewControl.parked() && AvmViewControl.showing()) {
           if (commanded) { if (wasThreeD) AvmViewControl.sendButton(back); else AvmViewControl.send(back); }
           if (opened) AvmViewControl.close();
         }
@@ -91,7 +101,8 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private void prepare(int run) {
     try {
       String reason = AvmViewControl.unavailableReason();
-      if (reason.isEmpty() && !AvmViewControl.parked()) reason = "нужен режим P";
+      boolean detect = reason.isEmpty() && AvmViewControl.parked();
+      if (reason.isEmpty() && !detect) reason = "нужен режим P";
       if (run != generation) return;
       if (reason.isEmpty() && !AvmViewControl.showing()) {
         publish("Адаптивный вид: открытие штатного приложения камер 360");
@@ -101,25 +112,26 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
         if (!AvmViewControl.showing()) reason = "штатное приложение камер 360 не открылось";
       }
       if (run != generation) return;
-      if (!reason.isEmpty()) { halt(run, reason); return; }
-      analysis.post(() -> beginRun(run));
-    } catch (Exception error) { halt(run, error.toString()); }
+      boolean follow = reason.isEmpty();
+      if (!follow) halt(run, reason, false);
+      if (detect) analysis.post(() -> beginRun(run, follow));
+    } catch (Exception error) { halt(run, error.toString(), false); }
   }
 
-  private void beginRun(int run) {
+  private void beginRun(int run, boolean follow) {
     if (run != generation) return;
     try {
       System.loadLibrary("opencv_java4");
       releaseAnalyzer();
       analyzer = new MotionAnalyzer(threeD);
-    } catch (Throwable error) { halt(run, "детектор не загрузился: " + error.getMessage()); return; }
+    } catch (Throwable error) { halt(run, "детектор не загрузился: " + error.getMessage(), false); return; }
     long now = SystemClock.elapsedRealtime();
     int start = threeD ? AvmLayout.HOME_3D : AvmLayout.FRONT;
     policy = new AdaptiveViewPolicy(now, start, threeD ? AvmLayout.BUTTONS : AvmLayout.VIEWS, threeD);
-    lastGuard = now; samples = 0; dropped = 0; home = start;
+    lastGuard = now; samples = 0; dropped = 0; home = start; motionStreak = 0; detectFrom = now + AdaptiveViewPolicy.WARMUP_MS;
     openLog();
-    active = true;
-    publish("Адаптивный вид: определение ракурса");
+    detecting = true;
+    if (follow) { active = true; publish("Адаптивный вид: определение ракурса"); }
   }
 
   private void finishRun() {
@@ -128,7 +140,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
 
   private void releaseAnalyzer() { if (analyzer != null) { analyzer.release(); analyzer = null; } }
 
-  @Override public boolean wantsFrame() { return active; }
+  @Override public boolean wantsFrame() { return active || detecting; }
 
   /** Capture thread: a free buffer, or null while the previous frames still wait. */
   @Override public byte[] frameBuffer() {
@@ -144,7 +156,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     analysis.post(analyse);
   }
 
-  @Override public void samplerFailed(String error) { halt(generation, "выборка кадров: " + error); }
+  @Override public void samplerFailed(String error) { halt(generation, "выборка кадров: " + error, false); }
 
   private void analyse() {
     byte[] frame = pending.getAndSet(null);
@@ -153,31 +165,44 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     spare.set(frame);
     int run = generation;
     AdaptiveViewPolicy current = policy;
-    if (!active || current == null) return;
+    if (!detecting || current == null) return;
     try {
       long started = SystemClock.elapsedRealtime();
       int glyph = AvmLayout.selectedView(working);
       int marker = threeD ? AvmLayout.selectedButton(working) : glyph;
       MotionAnalyzer.Reading reading = analyzer.process(working);
-      int request = current.onSample(started, marker, glyph != AvmLayout.VIEW_UNKNOWN, reading.near);
+      boolean following = active;
+      int request = following ? current.onSample(started, marker, glyph != AvmLayout.VIEW_UNKNOWN, reading.near) : AvmLayout.VIEW_UNKNOWN;
       home = current.home();
       long took = SystemClock.elapsedRealtime() - started;
       samples++;
       record(started, marker, current, reading, request, took);
+      detect(started, reading, !following || current.settled(started));
       if (request != AvmLayout.VIEW_UNKNOWN) command(run, current, request);
-      if (current.stopped() != AdaptiveViewPolicy.Stop.NONE) halt(run, reason(current.stopped()));
-      else report(current, started);
+      if (following) {
+        if (current.stopped() != AdaptiveViewPolicy.Stop.NONE) halt(run, reason(current.stopped()), false);
+        else report(current, started);
+        if (active && current.settled(started)) listener.onWatching(true, started);
+      }
       if (started - lastGuard >= GUARD_MS) { lastGuard = started; control.execute(() -> guard(run)); }
     } catch (Exception error) {
       Log.w(TAG, "Analysis", error);
-      halt(run, "анализ: " + error.getMessage());
+      halt(run, "анализ: " + error.getMessage(), false);
     }
+  }
+
+  /** A view being switched repaints part of the panorama, so those samples say nothing. */
+  private void detect(long now, MotionAnalyzer.Reading reading, boolean settled) {
+    boolean near = false;
+    for (boolean side : reading.near) near |= side;
+    motionStreak = near && settled && !reading.rejected && now >= detectFrom ? motionStreak + 1 : 0;
+    if (motionStreak >= AdaptiveViewPolicy.CONFIRM_SAMPLES) listener.onMotion(now);
   }
 
   private void command(int run, AdaptiveViewPolicy current, int view) {
     control.execute(() -> {
       if (run != generation || !active) return;
-      if (!AvmViewControl.parked()) { halt(run, "машина не в P"); return; }
+      if (!AvmViewControl.parked()) { halt(run, "машина не в P", false); return; }
       try {
         commanded = true;
         boolean sent = view == AvmLayout.TOGGLE_2D ? AvmViewControl.toggleMode() : threeD ? AvmViewControl.sendButton(view) : AvmViewControl.send(view);
@@ -188,15 +213,18 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
 
   /** Stops the commands when the car leaves P or the 360 screen goes away. */
   private void guard(int run) {
-    if (run != generation || !active) return;
-    if (!AvmViewControl.parked()) halt(run, "машина не в P");
-    else if (!AvmViewControl.showing()) halt(run, "штатное приложение камер 360 закрыто");
+    if (run != generation || !detecting) return;
+    if (!AvmViewControl.parked()) halt(run, "машина не в P", false);
+    else if (active && !AvmViewControl.showing()) halt(run, "штатное приложение камер 360 закрыто", true);
   }
 
-  private void halt(int run, String reason) {
+  /** @param keepDetecting the frames still show the panorama, so people near the car still count */
+  private void halt(int run, String reason, boolean keepDetecting) {
     if (run != generation) return;
     active = false; halted = true;
-    publish("Адаптивный вид остановлен: " + reason + " · запись продолжается");
+    if (!keepDetecting) detecting = false;
+    listener.onWatching(false, SystemClock.elapsedRealtime());
+    publish("Адаптивный вид остановлен: " + reason);
   }
 
   private static String reason(AdaptiveViewPolicy.Stop stop) {
@@ -223,6 +251,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   String status() { return status; }
   /** Stopped by itself, for example because the owner closed the 360 screen. */
   boolean halted() { return halted; }
+  boolean following() { return active; }
 
   private void openLog() {
     closeLog();

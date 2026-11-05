@@ -1,8 +1,6 @@
 package local.codex.voyahcameralab;
 
-import android.content.Context;
 import android.graphics.SurfaceTexture;
-import android.net.Uri;
 import android.opengl.*;
 import android.os.Handler;
 import android.os.SystemClock;
@@ -10,20 +8,20 @@ import android.view.Surface;
 import java.nio.*;
 
 final class GlCameraRenderer {
-  interface Listener {void onFrame(long count);void onError(String error);void onSegmentSaved(Uri uri);void onRecordingFinished(Uri uri,String error);}
+  interface Listener {void onFrame(long count);void onError(String error);void onRecordingFinished(String error);}
   /** Receives small top-down RGBA copies of the output frame on the capture thread. */
   interface FrameSampler {boolean wantsFrame();byte[] frameBuffer();void frameReady(byte[] rgba);void samplerFailed(String error);}
   private static final long SAMPLE_INTERVAL_MS=200;
   final Surface cameraSurface;
   final FramePolicy policy;
-  private final Context context;private final Listener listener;private final SurfaceTexture cameraTexture;
+  private final Listener listener;private final SurfaceTexture cameraTexture;
   private final Surface displaySurface;private EGLDisplay display;private EGLContext eglContext;private EGLConfig config;
-  private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;private Uri lastSaved;
+  private EGLSurface preview,encoder=EGL14.EGL_NO_SURFACE;private AvcRecorder recorder;
   private final float[] transform=new float[16];private final FloatBuffer vertices;
   private int program,texture,position,coordinates,matrix,vertical,rotation,width,height,sampleFramebuffer,sampleTexture;private long frames,lastReport,lastSample;private boolean closed;
   private volatile FrameSampler sampler;private ByteBuffer samplePixels;
-  GlCameraRenderer(Context context,Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
-    this.context=context;this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
+  GlCameraRenderer(Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
+    this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
     displaySurface=new Surface(output);
     display=EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
     int[] version=new int[2];if(!EGL14.eglInitialize(display,version,0,version,1))throw new IllegalStateException("EGL initialize");
@@ -111,9 +109,9 @@ final class GlCameraRenderer {
     samplePixels=ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.nativeOrder());
   }
   boolean isRecording(){return recorder!=null;}
-  void startRecording(String cameraId,int segmentSeconds) throws Exception {
+  void startRecording(VideoSession session) throws Exception {
     if(closed||recorder!=null)throw new IllegalStateException("Recording not available");
-    makeCurrent(preview);lastSaved=null;recorder=new AvcRecorder(context,policy.outputWidth,policy.outputHeight,cameraId,segmentSeconds,uri->{lastSaved=uri;listener.onSegmentSaved(uri);});
+    makeCurrent(preview);recorder=new AvcRecorder(session,policy.outputWidth,policy.outputHeight);
     try{encoder=EGL14.eglCreateWindowSurface(display,config,recorder.input,new int[]{EGL14.EGL_NONE},0);if(encoder==EGL14.EGL_NO_SURFACE)throw new IllegalStateException("Encoder EGL surface");}
     catch(Exception failure){try{recorder.finish();}catch(Exception ignored){}recorder=null;throw failure;}
   }
@@ -122,8 +120,8 @@ final class GlCameraRenderer {
     if(recorder==null)return;AvcRecorder finished=recorder;recorder=null;
     try{makeCurrent(preview);}catch(Exception ignored){}
     if(encoder!=EGL14.EGL_NO_SURFACE)EGL14.eglDestroySurface(display,encoder);encoder=EGL14.EGL_NO_SURFACE;
-    String failure=cause;try{Uri uri=finished.finish();if(uri!=null)lastSaved=uri;}catch(Exception error){if(failure==null)failure=error.toString();}
-    listener.onRecordingFinished(lastSaved,failure);
+    String failure=cause;try{finished.finish();}catch(Exception error){if(failure==null)failure=error.toString();}
+    listener.onRecordingFinished(failure);
   }
   void close(){
     if(closed)return;closed=true;sampler=null;stopRecording();

@@ -1,23 +1,36 @@
 package local.codex.voyahcameralab;
 
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.os.StatFs;
+import android.provider.MediaStore;
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
-/** Owns only Sentry files in this application's external-files directory. */
+/**
+ * Finished videos live in the shared Movies/Sentry folder through MediaStore, where the gallery
+ * and any file manager find them without a permission. Hidden chunks of running recordings stay
+ * in the app's own folder until they are joined.
+ */
 final class RecordingStore {
-  static final String AUTHORITY="local.codex.voyahcameralab.recordings";
-  private final File directory;
+  static final String FOLDER=Environment.DIRECTORY_MOVIES+"/Sentry";
+  private static final String[] COLUMNS={MediaStore.MediaColumns._ID,MediaStore.MediaColumns.DISPLAY_NAME,MediaStore.MediaColumns.SIZE,MediaStore.MediaColumns.DATE_TAKEN,MediaStore.MediaColumns.DATE_ADDED};
+  private static final String IN_FOLDER=MediaStore.MediaColumns.RELATIVE_PATH+"=?";
+  private final Context context;
+  private final ContentResolver resolver;
   private final SharedPreferences preferences;
-  private File latestCompleted;
-  private String activeSession;
+  private final File workspace;
 
   static final class Snapshot {
     final long totalBytes,availableBytes,recordingBytes;
@@ -28,87 +41,125 @@ final class RecordingStore {
     }
   }
 
-  static final class Pending {
-    final File file,completed;
-    Pending(File file,File completed){this.file=file;this.completed=completed;}
+  static final class Video implements StoragePolicy.Reclaimable {
+    final Uri uri;final String name;final long size,wallMs;private final ContentResolver resolver;
+    Video(ContentResolver resolver,Uri uri,String name,long size,long wallMs){this.resolver=resolver;this.uri=uri;this.name=name;this.size=size;this.wallMs=wallMs;}
+    boolean event(){return StoragePolicy.isEvent(name);}
+    @Override public long bytes(){return size;}
+    @Override public boolean reclaim(){return resolver.delete(uri,null,null)>0;}
   }
 
   RecordingStore(Context context) throws IOException {
-    directory=directory(context);
-    preferences=context.getSharedPreferences("camera",Context.MODE_PRIVATE);
+    this.context=context.getApplicationContext();resolver=context.getContentResolver();
+    preferences=context.getSharedPreferences("camera",Context.MODE_PRIVATE);workspace=workspace(context);
   }
 
-  /** A recorder names its session so that its own fragments never count as abandoned. */
-  RecordingStore(Context context,String session) throws IOException {
-    this(context);activeSession=session;
-  }
-
-  static File directory(Context context) throws IOException {
-    File movies=context.getExternalFilesDir(Environment.DIRECTORY_MOVIES);
-    if(movies==null)throw new IOException("Папка видео приложения недоступна");
-    File directory=new File(movies,"Sentry");
+  static File workspace(Context context) throws IOException {
+    File directory=context.getExternalFilesDir("chunks");
+    if(directory==null)throw new IOException("Папка видео приложения недоступна");
     if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("Не удалось создать папку записей приложения");
-    // Do not follow a substituted Sentry directory outside the app's movies folder.
-    if(!new File(movies.getCanonicalFile(),"Sentry").equals(directory.getCanonicalFile()))
-      throw new IOException("Unsafe recording directory");
-    return directory.getCanonicalFile();
-  }
-
-  synchronized List<File> list() throws IOException {return StoragePolicy.completedFiles(directory);}
-
-  static Uri uri(Context context,File file) throws IOException {
-    if(!StoragePolicy.isCompleted(directory(context),file))throw new IOException("Not a completed Sentry clip");
-    return new Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(file.getName()).build();
-  }
-
-  synchronized Snapshot snapshot() throws IOException {
-    long[] space=space();long bytes=0;List<File> clips=list();
-    for(File clip:clips)bytes+=clip.length();
-    return new Snapshot(space[0],space[1],bytes,clips.size());
-  }
-
-  synchronized void ensureSpace(File protectedFile) throws IOException {
-    StoragePolicy.ensureSpace(directory,protectedFile==null?latestCompleted:protectedFile,this::space,cycle(),maximumPercent(),activeSession,System.currentTimeMillis());
-  }
-
-  /** Enforce pressure during long clips too; only older completed clips are eligible. */
-  synchronized void checkDuringCapture() throws IOException {
-    ensureSpace(latestCompleted);
-  }
-
-  synchronized Pending createPending(String session,int sequence) throws IOException {
-    ensureSpace(null);
-    if(!session.matches("[0-9a-f]{32}")||sequence<1||sequence>999999)throw new IOException("Invalid clip sequence");
-    long previous=preferences.getLong("last_clip_stamp",0);
-    List<File> existing=list();
-    if(!existing.isEmpty())previous=Math.max(previous,Long.parseLong(existing.get(0).getName().split("-")[1]));
-    long stamp=StoragePolicy.nextStamp(System.currentTimeMillis(),previous);
-    if(!preferences.edit().putLong("last_clip_stamp",stamp).commit())throw new IOException("Не удалось сохранить порядок видеозаписей");
-    String name=String.format(Locale.US,"sentry-%013d-%s-%06d.mp4",stamp,session,sequence);
-    File completed=new File(directory,name),pending=new File(directory,name+".part");
-    if(completed.exists()||!pending.createNewFile())throw new IOException("Не удалось создать новый видеофрагмент");
-    return new Pending(pending,completed);
-  }
-
-  synchronized File complete(Pending pending) throws IOException {
-    if(!directory.equals(pending.file.getCanonicalFile().getParentFile())||pending.completed.exists()
-        ||!pending.file.renameTo(pending.completed))throw new IOException("Не удалось завершить видеофрагмент");
-    latestCompleted=pending.completed;
-    return pending.completed;
-  }
-
-  synchronized void discard(Pending pending){
-    if(pending==null)return;
-    try{if(directory.equals(pending.file.getCanonicalFile().getParentFile())&&pending.file.getName().endsWith(".mp4.part"))pending.file.delete();}
-    catch(IOException ignored){}
+    return directory;
   }
 
   static String newSession(){return UUID.randomUUID().toString().replace("-","");}
+
+  File sessionDirectory(String session) throws IOException {
+    File directory=new File(workspace,session);
+    if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("Не удалось создать папку записи");
+    return directory;
+  }
+
+  File[] sessions(){File[] directories=workspace.listFiles(File::isDirectory);return directories==null?new File[0]:directories;}
+
+  /** Newest first. */
+  List<Video> list() throws IOException {
+    List<Video> videos=new ArrayList<>();
+    try(Cursor rows=resolver.query(collection(),COLUMNS,IN_FOLDER,new String[]{FOLDER+"/"},MediaStore.MediaColumns.DATE_ADDED+" DESC")){
+      if(rows==null)throw new IOException("Список видео недоступен");
+      while(rows.moveToNext()){
+        long taken=rows.isNull(3)?0:rows.getLong(3);
+        videos.add(new Video(resolver,ContentUris.withAppendedId(collection(),rows.getLong(0)),rows.getString(1),rows.getLong(2),taken>0?taken:rows.getLong(4)*1000));
+      }
+    }catch(RuntimeException failure){throw new IOException("Список видео недоступен",failure);}
+    return videos;
+  }
+
+  Snapshot snapshot() throws IOException {
+    long[] space=space();long bytes=0;List<Video> videos=list();
+    for(Video video:videos)bytes+=video.size;
+    return new Snapshot(space[0],space[1],bytes,videos.size());
+  }
+
+  boolean canHoldCopy(long bytes) throws IOException {
+    long[] space=space();
+    return StoragePolicy.hasSpace(space[0],space[1]-bytes,maximumPercent());
+  }
+
+  /**
+   * Under pressure footage without events goes first, then events, oldest first in both. The
+   * newest finished video stays. The start of the running video counts as its oldest footage.
+   */
+  void ensureSpace(VideoSession running) throws IOException {
+    long[] space=space();
+    if(StoragePolicy.hasSpace(space[0],space[1],maximumPercent()))return;
+    List<Video> records=new ArrayList<>(),events=new ArrayList<>();
+    List<Video> videos=list();
+    for(int i=videos.size()-1;i>0;i--)(videos.get(i).event()?events:records).add(videos.get(i));
+    List<StoragePolicy.Reclaimable> start=running==null?new ArrayList<>():running.heldStart();
+    boolean event=running!=null&&running.inEvent();
+    StoragePolicy.ensureSpace(this::space,cycle(),maximumPercent(),StoragePolicy.reclaimOrder(records,event?new ArrayList<>():start,events,event?start:new ArrayList<>()));
+  }
+
+  Uri createPending(String name,long wallMs) throws IOException {
+    ContentValues values=new ContentValues();
+    values.put(MediaStore.MediaColumns.DISPLAY_NAME,name);
+    values.put(MediaStore.MediaColumns.MIME_TYPE,"video/mp4");
+    values.put(MediaStore.MediaColumns.RELATIVE_PATH,FOLDER);
+    values.put(MediaStore.MediaColumns.DATE_TAKEN,wallMs);
+    values.put(MediaStore.MediaColumns.IS_PENDING,1);
+    Uri uri;
+    try{uri=resolver.insert(collection(),values);}catch(RuntimeException failure){throw new IOException("Не удалось создать видео в папке Movies/Sentry",failure);}
+    if(uri==null)throw new IOException("Не удалось создать видео в папке Movies/Sentry");
+    return uri;
+  }
+
+  ParcelFileDescriptor openPending(Uri uri) throws IOException {
+    ParcelFileDescriptor file=resolver.openFileDescriptor(uri,"rw");
+    if(file==null)throw new IOException("Видео недоступно для записи");
+    return file;
+  }
+
+  void publishPending(Uri uri) throws IOException {
+    ContentValues values=new ContentValues();
+    values.put(MediaStore.MediaColumns.IS_PENDING,0);
+    if(resolver.update(uri,values,null,null)<1)throw new IOException("Не удалось завершить видео");
+  }
+
+  void discardPending(Uri uri){try{resolver.delete(uri,null,null);}catch(RuntimeException ignored){}}
+
+  /** Half-written entries of a run that was killed. Their chunks are joined again. */
+  void dropAbandonedPending(){
+    Bundle arguments=new Bundle();
+    arguments.putString(ContentResolver.QUERY_ARG_SQL_SELECTION,IN_FOLDER+" AND "+MediaStore.MediaColumns.IS_PENDING+"=1");
+    arguments.putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,new String[]{FOLDER+"/"});
+    arguments.putInt(MediaStore.QUERY_ARG_MATCH_PENDING,MediaStore.MATCH_INCLUDE);
+    try(Cursor rows=resolver.query(collection(),new String[]{MediaStore.MediaColumns._ID},arguments,null)){
+      while(rows!=null&&rows.moveToNext())discardPending(ContentUris.withAppendedId(collection(),rows.getLong(0)));
+    }catch(RuntimeException ignored){}
+  }
+
+  /** The folder of 0.6 and earlier, emptied once into whole videos. */
+  File legacyFolder(){
+    File movies=context.getExternalFilesDir(Environment.DIRECTORY_MOVIES);
+    return movies==null?null:new File(movies,"Sentry");
+  }
+
+  private static Uri collection(){return MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);}
   private boolean cycle(){return !"stop".equals(preferences.getString("storage_policy","cycle"));}
   private int maximumPercent(){return StoragePolicy.percent(preferences.getInt("max_storage_percent",90));}
   private long[] space() throws IOException {
     try {
-      StatFs stat=new StatFs(directory.getPath());
+      StatFs stat=new StatFs(workspace.getPath());
       long total=stat.getTotalBytes(),available=stat.getAvailableBytes();
       if(total<=0||available<0||available>total)throw new IOException("Invalid recording volume statistics");
       return new long[]{total,available};
