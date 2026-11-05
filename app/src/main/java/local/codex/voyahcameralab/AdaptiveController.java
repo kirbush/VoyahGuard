@@ -94,11 +94,11 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       if (reason.isEmpty() && !AvmViewControl.parked()) reason = "нужен режим P";
       if (run != generation) return;
       if (reason.isEmpty() && !AvmViewControl.showing()) {
-        publish("Адаптивный вид: открытие 360");
+        publish("Адаптивный вид: открытие штатного приложения камер 360");
         opened = true;
         AvmViewControl.open();
         if (run != generation) return;
-        if (!AvmViewControl.showing()) reason = "360 не открылся";
+        if (!AvmViewControl.showing()) reason = "штатное приложение камер 360 не открылось";
       }
       if (run != generation) return;
       if (!reason.isEmpty()) { halt(run, reason); return; }
@@ -190,7 +190,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private void guard(int run) {
     if (run != generation || !active) return;
     if (!AvmViewControl.parked()) halt(run, "машина не в P");
-    else if (!AvmViewControl.showing()) halt(run, "360 закрыт");
+    else if (!AvmViewControl.showing()) halt(run, "штатное приложение камер 360 закрыто");
   }
 
   private void halt(int run, String reason) {
@@ -202,7 +202,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   private static String reason(AdaptiveViewPolicy.Stop stop) {
     switch (stop) {
       case NOT_CONFIRMED: return "вид не подтвердился";
-      case VIEW_LOST: return "ракурс не определён, нужен режим 2D в 360";
+      case VIEW_LOST: return "ракурс не определён, нужен режим 2D в штатном приложении камер 360";
       case COMMAND_FAILED: return "команда не отправлена";
       default: return "неизвестно";
     }

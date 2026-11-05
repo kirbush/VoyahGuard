@@ -94,7 +94,7 @@ public final class MainActivity extends Activity {
         public void onDisconnected(CameraDevice device){device.close();cameraFailure(token,"Камера занята другим приложением");}public void onError(CameraDevice device,int error){device.close();cameraFailure(token,"Камера недоступна ("+error+")");}
       },capture);
     }catch(Exception e){cameraFailure(token,e.toString());}});
-    main.postDelayed(()->{if(gate.accepts(token)&&frames==0)closeCamera("Нет видеопотока. Выберите режим в штатном 360, затем нажмите Старт.");},8000);
+    main.postDelayed(()->{if(gate.accepts(token)&&frames==0)closeCamera("Нет видеопотока. Откройте штатное приложение камер 360, затем нажмите Старт.");},8000);
   }
   private void cameraFailure(int token,String error){main.post(()->{if(gate.accepts(token))closeCamera(error+". Нажмите Старт для подключения.");});}
   private void startRecording(){
