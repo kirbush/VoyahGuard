@@ -17,6 +17,15 @@ final class GuardControl {
   }
 
   static final int LAMPS_NONE = 0, LAMPS_POSITION = 1, LAMPS_LOW = 2;
+
+  /**
+   * Flashing the ambient light and the headlights needs this permission. The firmware has no such
+   * permission of its own: it exists only when VoyahTweaks declares it, and an app installed before
+   * Tweaks gets it only with its next update.
+   */
+  static boolean canFlashLights(android.content.Context context) {
+    return context.checkSelfPermission("com.qinggan.permission.WRITE_CANBUS") == android.content.pm.PackageManager.PERMISSION_GRANTED;
+  }
   private static final String[] LAMP_WORDS = {GuardBridge.LAMPS_NONE, GuardBridge.LAMPS_POSITION, GuardBridge.LAMPS_LOW};
 
   /** Blocks for the length of the flashes, about eight seconds. @param lamps LAMPS_NONE, LAMPS_POSITION or LAMPS_LOW */

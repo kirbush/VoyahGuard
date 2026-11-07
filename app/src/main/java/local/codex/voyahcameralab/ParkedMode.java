@@ -35,6 +35,8 @@ final class ParkedMode {
   private final AtomicBoolean flashing = new AtomicBoolean();
   /** Where the bridge keeps the owner's lights while an alarm flashes them. */
   private final File savedLights;
+  /** Without it the car refuses the light commands, so the alarm does not even try. */
+  private final boolean lightsAllowed;
 
   // Settings, read on the main thread and used on the handler and analysis threads.
   private volatile boolean screensOption, climateOption, voiceOption, lightOption, unlockOption, alarmOption, running, guarded;
@@ -56,6 +58,7 @@ final class ParkedMode {
     this.unlocked = unlocked;
     preferences = context.getSharedPreferences("camera", Context.MODE_PRIVATE);
     this.holding = holding;
+    lightsAllowed = GuardControl.canFlashLights(context);
     AvmViewControl.setApk(context.getApplicationInfo().sourceDir); // the bridges below need it before the camera starts
     screens = new ScreenControl(context);
     voice = new VoiceWarning(context, preferences);
@@ -77,8 +80,8 @@ final class ParkedMode {
     climateOption = preferences.getBoolean("climate_off", false);
     voiceOption = preferences.getBoolean("voice_warning", false);
     unlockOption = preferences.getBoolean("stop_on_unlock", false);
-    lightOption = preferences.getBoolean("alarm_light", false);
-    lampsOption = preferences.getInt("alarm_lamps", GuardControl.LAMPS_NONE);
+    lightOption = lightsAllowed && preferences.getBoolean("alarm_light", false);
+    lampsOption = lightsAllowed ? preferences.getInt("alarm_lamps", GuardControl.LAMPS_NONE) : GuardControl.LAMPS_NONE;
     int[] reach = new int[REACH_KEYS.length];
     for (int zone = 0; zone < reach.length; zone++) reach[zone] = WarningPolicy.pick(WarningPolicy.REACH_CM, preferences.getInt(REACH_KEYS[zone], WarningPolicy.DEFAULT_REACH_CM[zone]), WarningPolicy.DEFAULT_REACH_CM[zone]);
     reachCm = reach;
