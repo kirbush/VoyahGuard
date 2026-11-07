@@ -62,10 +62,10 @@ final class ParkedMode {
 
   void shutdown() {
     stop();
-    handler.post(() -> { voice.stop(); retryRestore(); screens.disconnect(); thread.quitSafely(); });
+    handler.post(() -> { voice.stop(); voice.endScenario(); retryRestore(); screens.disconnect(); thread.quitSafely(); });
   }
 
-  void testVoice() { handler.post(voice::play); }
+  void testVoice() { handler.post(() -> voice.play(false)); }
 
   /** Analysis thread. Only a guarded car speaks: nobody is shouted at from inside their own car. */
   void onMotion(long now) {
@@ -74,18 +74,19 @@ final class ParkedMode {
 
   /** The owner at the door may have unlocked since the last reading. */
   private void warn() {
-    if (ParkedPolicy.guarded(GuardControl.read())) voice.play();
+    if (ParkedPolicy.guarded(GuardControl.read())) voice.play(true);
   }
 
   private void tick() {
     if (!running) return;
     ParkedPolicy.Reading reading = GuardControl.read();
     guarded = ParkedPolicy.guarded(reading);
+    if (!guarded) voice.endScenario();
     apply(policy.update(reading, screensOption, climateOption && holding.getAsBoolean()));
     handler.postDelayed(tick, TICK_MS);
   }
 
-  private void undo() { guarded = false; apply(policy.stop()); }
+  private void undo() { guarded = false; voice.stop(); voice.endScenario(); apply(policy.stop()); }
 
   private void apply(List<ParkedPolicy.Action> actions) {
     for (ParkedPolicy.Action action : actions) {

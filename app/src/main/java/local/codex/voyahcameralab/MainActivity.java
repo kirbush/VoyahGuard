@@ -38,7 +38,7 @@ public final class MainActivity extends Activity {
     if(waitingForPark&&resumed&&!opening&&!closing&&!parkQuery&&now-lastParkCheck>=5000){lastParkCheck=now;parkQuery=true;controls.execute(()->{boolean parked=AvmViewControl.parked();main.post(()->{parkQuery=false;if(parked&&waitingForPark&&!destroyed){waitingForPark=false;retryPreview();}});});}updateUi();main.postDelayed(this,500);
   }};
   @Override public void onCreate(Bundle state){
-    super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON|WindowManager.LayoutParams.FLAG_FULLSCREEN);getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+    super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON|WindowManager.LayoutParams.FLAG_FULLSCREEN);hideSystemBars();
     preferences=getSharedPreferences("camera",MODE_PRIVATE);selectedId=preferences.getString("camera_id","1");main=new Handler(Looper.getMainLooper());manager=(CameraManager)getSystemService(CAMERA_SERVICE);power=PowerHoldController.shared(this);parked=new ParkedMode(this,this::holdsPower);adaptive=new AdaptiveController(this,new AdaptiveController.Listener(){
       public void onAdaptiveStatus(String text){main.post(()->{if(!destroyed){updateUi();writeState();}});}
       public void onMotion(long now){VideoSession session=videoSession;if(session!=null)session.motion(now);parked.onMotion(now);}
@@ -51,7 +51,10 @@ public final class MainActivity extends Activity {
   @Override protected void onSaveInstanceState(Bundle state){state.putBoolean("auto_record_pending",launch.isPending());if(exportSource!=null)state.putString("export_source",exportSource.toString());super.onSaveInstanceState(state);}
   // Re-tapping the launcher icon must not cut a running recording; otherwise it is a new launch.
   @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(recording||recordStarting)return;closeCamera("Новый запуск: подключение…");readLaunch(intent);if(resumed)refreshInventory();}
-  @Override protected void onResume(){super.onResume();resumed=true;if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)refreshInventory();else requestCameraPermission();}
+    /** Android and the OEM shell clear these flags after a touch or a restart; they are set again on every return. */
+  private void hideSystemBars(){getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_LAYOUT_STABLE);}
+  @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused)hideSystemBars();}
+  @Override protected void onResume(){super.onResume();resumed=true;hideSystemBars();if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)refreshInventory();else requestCameraPermission();}
   private void requestCameraPermission(){if(launch.takePermissionRequest())requestPermissions(new String[]{Manifest.permission.CAMERA},1);else setStatus("Разрешите доступ к камере в настройках Android.");}
   @Override protected void onStop(){resumed=false;autoPreview=true;launch.stop();closeCamera("Камера освобождена: приложение скрыто.");super.onStop();}
   @Override protected void onDestroy(){destroyed=true;gate.cancel();recordEpoch++;main.removeCallbacks(tick);videoSession=null;adaptive.shutdown();parked.shutdown();if(settingsDialog!=null)settingsDialog.dismiss();capture.post(()->{try{stopInternal();}finally{releasePower();controls.shutdown();captureThread.quitSafely();}});files.shutdown();super.onDestroy();}
@@ -76,6 +79,10 @@ public final class MainActivity extends Activity {
     followButton=overlayButton("Камеры 360",R.id.follow_button);followButton.setContentDescription("Снова показывать сторону с движением");followButton.setOnClickListener(v->restartAdaptive());LinearLayout.LayoutParams followParams=new LinearLayout.LayoutParams(dp(130),dp(44));followParams.leftMargin=dp(6);bottom.addView(followButton,followParams);startButton=overlayButton("Старт",R.id.record_button);stopButton=overlayButton("Стоп",R.id.stop_button);archiveButton=overlayButton("Записи",R.id.video_button);startButton.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_record,0,0,0);stopButton.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_stop,0,0,0);archiveButton.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_clips,0,0,0);
     for(Button b:new Button[]{startButton,stopButton,archiveButton}){b.setCompoundDrawablePadding(dp(6));LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(dp(112),dp(44));params.leftMargin=dp(6);bottom.addView(b,params);}
     root.addView(bottom,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
+    // A bar the shell keeps on screen must not cover the buttons: the picture may go under it, the controls never.
+    root.setOnApplyWindowInsetsListener((view,insets)->{FrameLayout.LayoutParams t=(FrameLayout.LayoutParams)top.getLayoutParams(),b=(FrameLayout.LayoutParams)bottom.getLayoutParams();
+      t.setMargins(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),0);b.setMargins(insets.getSystemWindowInsetLeft(),0,insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());
+      top.setLayoutParams(t);bottom.setLayoutParams(b);return insets;});
     startButton.setOnClickListener(v->{if(!opening){waitingForPark=false;launch.newLaunch(true);autoPreview=true;startPreview();}else startRecording();});stopButton.setOnClickListener(v->stopRecording());archiveButton.setOnClickListener(v->showArchive());setContentView(root);
     texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener(){public void onSurfaceTextureAvailable(SurfaceTexture s,int w,int h){maybeAutoStart();}public void onSurfaceTextureSizeChanged(SurfaceTexture s,int w,int h){capture.post(()->{if(renderer!=null)renderer.resize(w,h);});}public boolean onSurfaceTextureDestroyed(SurfaceTexture s){closeCamera("Окно предпросмотра закрыто.");if(!capture.post(s::release))s.release();return false;}public void onSurfaceTextureUpdated(SurfaceTexture s){}});updateUi();
   }
