@@ -14,11 +14,14 @@ import java.util.List;
  *
  * Only footage the detector really watched may be discarded: if it was not running, nobody knows
  * whether anything happened there, so that footage is kept whatever the option says.
+ *
+ * Motion near the car and motion further away in the camera panel both open an event; the video
+ * is an EVENT if anybody came near during it, CAMERA if things only moved further away.
  */
 final class VideoTimeline {
   static final long PRE_ROLL_MS = 30000, POST_ROLL_MS = 30000;
 
-  enum Kind {EVENT, RECORD}
+  enum Kind {EVENT, CAMERA, RECORD}
 
   static final class Chunk {
     final File file; final long startMs, endMs, wallMs, bytes; final boolean watched;
@@ -39,27 +42,36 @@ final class VideoTimeline {
     final List<Chunk> dropped = new ArrayList<>();
   }
 
-  private final boolean keepQuiet;
+  private final boolean keepQuiet, nearOnly;
   private final List<Chunk> open = new ArrayList<>();
-  private boolean inEvent, trimmed;
+  private boolean inEvent, near, trimmed;
   private long lastMotion;
 
-  /** @param keepQuiet false when the owner chose not to keep footage without events */
-  VideoTimeline(boolean keepQuiet) { this.keepQuiet = keepQuiet; }
+  /**
+   * @param keepQuiet false when the owner chose not to keep footage without motion
+   * @param nearOnly only motion near the car counts: further away is as good as quiet
+   */
+  VideoTimeline(boolean keepQuiet, boolean nearOnly) { this.keepQuiet = keepQuiet; this.nearOnly = nearOnly; }
 
   boolean inEvent() { return inEvent; }
+  /** The running event already has somebody near the car, not just motion further away. */
+  boolean inNearEvent() { return inEvent && near; }
   List<Chunk> held() { return new ArrayList<>(open); }
 
-  Step motion(long now) {
+  /** @param nearCar somebody near the car, not just something moving in the camera panel */
+  Step motion(long now, boolean nearCar) {
     Step step = new Step();
+    if (!nearCar && nearOnly) return step;
     if (!inEvent) {
       inEvent = true;
+      near = false;
       int first = 0;
       while (first < open.size() && open.get(first).endMs <= now - PRE_ROLL_MS) first++;
       List<Chunk> before = new ArrayList<>(open.subList(0, first));
       open.subList(0, first).clear();
       settleQuiet(before, step);
     }
+    near |= nearCar;
     lastMotion = now;
     return step;
   }
@@ -68,7 +80,7 @@ final class VideoTimeline {
     Step step = new Step();
     open.add(chunk);
     if (inEvent) {
-      if (chunk.endMs - lastMotion >= POST_ROLL_MS) { inEvent = false; emit(Kind.EVENT, step); }
+      if (chunk.endMs - lastMotion >= POST_ROLL_MS) { inEvent = false; emit(eventKind(), step); }
     } else if (!keepQuiet) {
       dropQuiet(chunk.endMs, step);
     }
@@ -95,7 +107,7 @@ final class VideoTimeline {
   /** The recording ended: whatever is held becomes its last video, or goes if nothing needs it. */
   Step finish() {
     Step step = new Step();
-    if (inEvent) { inEvent = false; emit(Kind.EVENT, step); }
+    if (inEvent) { inEvent = false; emit(eventKind(), step); }
     else { List<Chunk> rest = new ArrayList<>(open); open.clear(); settleQuiet(rest, step); }
     return step;
   }
@@ -115,6 +127,8 @@ final class VideoTimeline {
     if (keep) { step.videos.add(new Video(Kind.RECORD, chunks, trimmed)); trimmed = false; }
     else step.dropped.addAll(chunks);
   }
+
+  private Kind eventKind() { return near ? Kind.EVENT : Kind.CAMERA; }
 
   private void emit(Kind kind, Step step) {
     if (open.isEmpty()) return;

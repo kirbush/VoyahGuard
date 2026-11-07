@@ -16,6 +16,20 @@ final class WarningPolicy {
   static final int[] REPEAT_SECONDS = {10, 20, 30, 60, 0};
   static final int[] PER_HOUR = {10, 30, 60};
   static final int[] PHRASES = {1, 2, 3};
+  /** Per side, how close somebody must come to count, in centimetres; 0 never, ANYWHERE in the whole panorama. */
+  static final int ANYWHERE = 10000;
+  static final int[] REACH_CM = {0, 25, 50, 100, ANYWHERE};
+  /**
+   * Defaults in AvmLayout zone order: front, left, rear, right. The owner, seen on a recording:
+   * people passing in front of the car are no reason for an alarm unless they are right at the body.
+   */
+  static final int[] DEFAULT_REACH_CM = {50, ANYWHERE, ANYWHERE, ANYWHERE};
+
+  /** @param gapMetres per zone, from the body to the nearest person; reachCm per zone, as the owner chose */
+  static boolean alarming(double[] gapMetres, int[] reachCm) {
+    for (int zone = 0; zone < reachCm.length; zone++) if (reachCm[zone] > 0 && gapMetres[zone] * 100 <= reachCm[zone]) return true;
+    return false;
+  }
   static final int DEFAULT_DELAY = 15, DEFAULT_REPEAT = 10, DEFAULT_PER_HOUR = 60, DEFAULT_PHRASES = 2;
 
   private final long delayMs, repeatMs;
@@ -28,6 +42,12 @@ final class WarningPolicy {
     delayMs = pick(DELAY_SECONDS, delaySeconds, DEFAULT_DELAY) * 1000L;
     repeatMs = pick(REPEAT_SECONDS, repeatSeconds, DEFAULT_REPEAT) * 1000L;
     this.perHour = pick(PER_HOUR, perHour, DEFAULT_PER_HOUR);
+  }
+
+  /** Rebuilding the policy forgets who is standing there, so it happens only for new numbers. */
+  boolean sameSettings(int delaySeconds, int repeatSeconds, int perHour) {
+    return delayMs == pick(DELAY_SECONDS, delaySeconds, DEFAULT_DELAY) * 1000L && repeatMs == pick(REPEAT_SECONDS, repeatSeconds, DEFAULT_REPEAT) * 1000L
+        && this.perHour == pick(PER_HOUR, perHour, DEFAULT_PER_HOUR);
   }
 
   /** A stored value that is not on offer falls back to the default. */

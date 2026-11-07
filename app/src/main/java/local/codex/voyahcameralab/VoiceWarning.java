@@ -6,7 +6,6 @@ import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
-import android.util.Log;
 
 /**
  * Plays the bundled warning through the media channel at full volume. On this head unit the
@@ -43,18 +42,18 @@ final class VoiceWarning {
     try {
       if (!preferences.contains(SAVED)) preferences.edit().putInt(SAVED, audio.getStreamVolume(STREAM)).commit();
       audio.setStreamVolume(STREAM, audio.getStreamMaxVolume(STREAM), 0);
-    } catch (RuntimeException failure) { Log.w(TAG, "Volume", failure); restoreVolume(); return; }
+    } catch (RuntimeException failure) { AppLog.w(TAG, "Volume", failure); restoreVolume(); return; }
     playing = true;
-    if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) Log.w(TAG, "Audio focus refused");
+    if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) AppLog.w(TAG, "Audio focus refused");
     try { player = MediaPlayer.create(context, R.raw.step_away, attributes, audio.generateAudioSessionId()); }
-    catch (RuntimeException failure) { Log.w(TAG, "Player", failure); }
+    catch (RuntimeException failure) { AppLog.w(TAG, "Player", failure); }
     if (player == null) { stop(); return; }
     int[] left = {Math.max(1, phrases)};
     player.setOnCompletionListener(done -> {
       if (--left[0] > 0) done.start();
       else stop();
     });
-    player.setOnErrorListener((failed, what, extra) -> { Log.w(TAG, "Playback " + what); stop(); return true; });
+    player.setOnErrorListener((failed, what, extra) -> { AppLog.w(TAG, "Playback " + what); stop(); return true; });
     player.start();
   }
 
@@ -66,10 +65,17 @@ final class VoiceWarning {
     if (!keepLoud) restoreVolume();
   }
 
-  /** The car is no longer guarded, or the app goes away: the owner gets the old volume back. */
+  boolean playing() { return playing; }
+
+  /**
+   * The car is no longer guarded, or the app goes away: a warning in progress stops at once and
+   * the owner gets the old volume back. The test button's phrase is not a warning and plays out.
+   */
   void endScenario() {
+    boolean warning = playing && keepLoud;
     keepLoud = false;
-    if (!playing) restoreVolume();
+    if (warning) stop();
+    else if (!playing) restoreVolume();
   }
 
   void restoreAfterKill() { if (!playing) restoreVolume(); }
@@ -77,7 +83,7 @@ final class VoiceWarning {
   private void restoreVolume() {
     if (!preferences.contains(SAVED)) return;
     try { audio.setStreamVolume(STREAM, preferences.getInt(SAVED, audio.getStreamVolume(STREAM)), 0); }
-    catch (RuntimeException failure) { Log.w(TAG, "Volume back", failure); return; }
+    catch (RuntimeException failure) { AppLog.w(TAG, "Volume back", failure); return; }
     preferences.edit().remove(SAVED).apply();
   }
 }

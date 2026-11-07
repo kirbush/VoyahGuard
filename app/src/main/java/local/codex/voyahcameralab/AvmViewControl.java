@@ -59,13 +59,19 @@ final class AvmViewControl {
     return run("/system/bin/dumpsys", "dls_vehicle_signal_service").contains("STATE_SHOW");
   }
 
-  /** getGearStatus: no exception, non-null state, first field 0 is Parking. Anything else is not P. */
-  static boolean parked() {
+  /** Gear from canbus transaction 6: P, another gear, or unknown when the reply cannot be read. */
+  static final int GEAR_UNKNOWN = -1, GEAR_OTHER = 0, GEAR_PARK = 1;
+
+  static boolean parked() { return gear() == GEAR_PARK; }
+
+  /** The reply is (status, present, gear): P is 0, D was seen as 3. Anything else is unknown. */
+  static int gear() {
     String reply = run("/system/bin/service", "call", "qg.canbus", "6");
     int start = reply.indexOf('(');
-    if (start < 0) return false;
+    if (start < 0) return GEAR_UNKNOWN;
     String[] words = reply.substring(start + 1).trim().split("\\s+");
-    return words.length >= 3 && "00000000".equals(words[0]) && "00000001".equals(words[1]) && "00000000".equals(words[2]);
+    if (words.length < 3 || !"00000000".equals(words[0]) || !"00000001".equals(words[1]) || !words[2].matches("[0-9a-f]{8}")) return GEAR_UNKNOWN;
+    return "00000000".equals(words[2]) ? GEAR_PARK : GEAR_OTHER;
   }
 
   static boolean open() throws InterruptedException { return pulse(AVM_OPEN); }
@@ -87,7 +93,10 @@ final class AvmViewControl {
   }
 
   /** One of this APK's fixed entry points in its own app_process, or "" without an APK path. */
-  static String bridge(String entry, String... arguments) {
+  static String bridge(String entry, String... arguments) { return bridge(COMMAND_TIMEOUT_MS, entry, arguments); }
+
+  /** For the few operations that run longer by design, such as the alarm light. */
+  static String bridge(long timeoutMs, String entry, String... arguments) {
     if (apk == null || apk.indexOf(':') >= 0) return "";
     String[] command = new String[4 + arguments.length];
     command[0] = "/system/bin/app_process";
@@ -95,11 +104,13 @@ final class AvmViewControl {
     command[2] = "/system/bin";
     command[3] = entry;
     System.arraycopy(arguments, 0, command, 4, arguments.length);
-    return run(command);
+    return run(timeoutMs, command);
   }
 
   /** Bounded even if the child never writes or exits: the pipe is read on its own daemon thread. */
-  static String run(String... command) {
+  static String run(String... command) { return run(COMMAND_TIMEOUT_MS, command); }
+
+  static String run(long timeoutMs, String... command) {
     Process process = null;
     try {
       process = new ProcessBuilder(Arrays.asList(command)).redirectErrorStream(true).start();
@@ -112,7 +123,7 @@ final class AvmViewControl {
       }, "avm-command");
       reader.setDaemon(true);
       reader.start();
-      if (!process.waitFor(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return "";
+      if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) return "";
       reader.join(200);
       return output.toString().trim();
     } catch (Exception error) {

@@ -1,5 +1,6 @@
 package local.codex.voyahcameralab;
 
+import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.opengl.*;
 import android.os.Handler;
@@ -20,6 +21,13 @@ final class GlCameraRenderer {
   private final float[] transform=new float[16];private final FloatBuffer vertices;
   private int program,texture,position,coordinates,matrix,vertical,rotation,width,height,sampleFramebuffer,sampleTexture;private long frames,lastReport,lastSample;private boolean closed;
   private volatile FrameSampler sampler;private ByteBuffer samplePixels;
+  /** Date and time from the head unit clock, drawn into the video only: the preview and the detector never see it. */
+  private static final int STAMP_WIDTH=420,STAMP_HEIGHT=48,STAMP_REFERENCE_HEIGHT=720;
+  private volatile boolean stampOn=true;private int stampProgram,stampTexture,stampPosition,stampCoordinates;private long stampSecond=-1;private FloatBuffer stampVertices;
+  private final android.graphics.Bitmap stampBitmap=android.graphics.Bitmap.createBitmap(STAMP_WIDTH,STAMP_HEIGHT,android.graphics.Bitmap.Config.ARGB_8888);
+  private final android.graphics.Canvas stampCanvas=new android.graphics.Canvas(stampBitmap);
+  private final android.graphics.Paint stampText=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG),stampBack=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+  private final java.text.SimpleDateFormat stampFormat=new java.text.SimpleDateFormat("dd.MM.yyyy  HH:mm:ss",java.util.Locale.ROOT);
   GlCameraRenderer(Handler handler,SurfaceTexture output,int windowWidth,int windowHeight,int inputWidth,int inputHeight,FramePolicy policy,Listener listener) throws Exception {
     this.listener=listener;this.policy=policy;width=windowWidth;height=windowHeight;
     displaySurface=new Surface(output);
@@ -45,9 +53,38 @@ final class GlCameraRenderer {
     position=GLES20.glGetAttribLocation(program,"aPosition");coordinates=GLES20.glGetAttribLocation(program,"aTex");matrix=GLES20.glGetUniformLocation(program,"uMatrix");vertical=GLES20.glGetUniformLocation(program,"uVertical");rotation=GLES20.glGetUniformLocation(program,"uRotation");
     vertices=ByteBuffer.allocateDirect(16*4).order(ByteOrder.nativeOrder()).asFloatBuffer();
     vertices.put(new float[]{-1,-1,0,0,1,-1,1,0,-1,1,0,1,1,1,1,1}).position(0);
+    createStamp(vertex);
     cameraTexture=new SurfaceTexture(texture);cameraTexture.setDefaultBufferSize(inputWidth,inputHeight);
     cameraSurface=new Surface(cameraTexture);
     cameraTexture.setOnFrameAvailableListener(unused->frame(),handler);
+  }
+  void setTimestamp(boolean on){stampOn=on;}
+  private void createStamp(String vertex){
+    int v=shader(GLES20.GL_VERTEX_SHADER,vertex),f=shader(GLES20.GL_FRAGMENT_SHADER,"precision mediump float;uniform sampler2D image;varying vec2 vTex;void main(){gl_FragColor=texture2D(image,vTex);}");
+    stampProgram=GLES20.glCreateProgram();GLES20.glAttachShader(stampProgram,v);GLES20.glAttachShader(stampProgram,f);GLES20.glLinkProgram(stampProgram);GLES20.glDeleteShader(v);GLES20.glDeleteShader(f);
+    int[] linked=new int[1];GLES20.glGetProgramiv(stampProgram,GLES20.GL_LINK_STATUS,linked,0);if(linked[0]!=GLES20.GL_TRUE)throw new IllegalStateException(GLES20.glGetProgramInfoLog(stampProgram));
+    stampPosition=GLES20.glGetAttribLocation(stampProgram,"aPosition");stampCoordinates=GLES20.glGetAttribLocation(stampProgram,"aTex");
+    stampVertices=ByteBuffer.allocateDirect(16*4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+    stampVertices.put(new float[]{-1,-1,0,1,1,-1,1,1,-1,1,0,0,1,1,1,0}).position(0); // bitmap rows run top-down
+    int[] textures=new int[1];GLES20.glGenTextures(1,textures,0);stampTexture=textures[0];GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,stampTexture);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);
+    android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D,0,stampBitmap,0);
+    stampText.setColor(Color.WHITE);stampText.setTextSize(32);stampText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);stampBack.setColor(0x99000000);
+  }
+  /** Bottom right, over the black edge of the fisheye picture; redrawn once a second. */
+  private void drawStamp(int width,int height){
+    if(!stampOn)return;
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,stampTexture);
+    long second=System.currentTimeMillis()/1000;
+    if(second!=stampSecond){stampSecond=second;stampBitmap.eraseColor(Color.TRANSPARENT);stampCanvas.drawRoundRect(0,0,STAMP_WIDTH,STAMP_HEIGHT,10,10,stampBack);stampCanvas.drawText(stampFormat.format(new java.util.Date(second*1000)),16,STAMP_HEIGHT-13,stampText);android.opengl.GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D,0,0,0,stampBitmap);}
+    int w=STAMP_WIDTH*height/STAMP_REFERENCE_HEIGHT,h=STAMP_HEIGHT*height/STAMP_REFERENCE_HEIGHT,margin=16*height/STAMP_REFERENCE_HEIGHT;
+    GLES20.glViewport(width-w-margin,margin,w,h);GLES20.glEnable(GLES20.GL_BLEND);GLES20.glBlendFunc(GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA); // bitmaps are premultiplied
+    GLES20.glUseProgram(stampProgram);
+    stampVertices.position(0);GLES20.glVertexAttribPointer(stampPosition,2,GLES20.GL_FLOAT,false,16,stampVertices);GLES20.glEnableVertexAttribArray(stampPosition);
+    stampVertices.position(2);GLES20.glVertexAttribPointer(stampCoordinates,2,GLES20.GL_FLOAT,false,16,stampVertices);GLES20.glEnableVertexAttribArray(stampCoordinates);
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);GLES20.glDisable(GLES20.GL_BLEND);
+    if(GLES20.glGetError()!=GLES20.GL_NO_ERROR)stampOn=false; // the date is not worth the recording
   }
   private static int shader(int type,String code){int shader=GLES20.glCreateShader(type);GLES20.glShaderSource(shader,code);GLES20.glCompileShader(shader);int[] valid=new int[1];GLES20.glGetShaderiv(shader,GLES20.GL_COMPILE_STATUS,valid,0);if(valid[0]!=GLES20.GL_TRUE)throw new IllegalStateException(GLES20.glGetShaderInfoLog(shader));return shader;}
   private void makeCurrent(EGLSurface surface){if(surface==null||surface==EGL14.EGL_NO_SURFACE||!EGL14.eglMakeCurrent(display,surface,surface,eglContext))throw new IllegalStateException("EGL makeCurrent 0x"+Integer.toHexString(EGL14.eglGetError()));}
@@ -72,7 +109,7 @@ final class GlCameraRenderer {
     try {
       makeCurrent(preview);cameraTexture.updateTexImage();cameraTexture.getTransformMatrix(transform);
       draw(width,height,true);if(!EGL14.eglSwapBuffers(display,preview))throw new IllegalStateException("Preview swap failed");
-      if(recorder!=null){makeCurrent(encoder);draw(policy.outputWidth,policy.outputHeight,false);EGLExt.eglPresentationTimeANDROID(display,encoder,recorder.clock.next(System.nanoTime())*1000);if(!EGL14.eglSwapBuffers(display,encoder))throw new IllegalStateException("Encoder swap failed");recorder.drain(false);}
+      if(recorder!=null){makeCurrent(encoder);draw(policy.outputWidth,policy.outputHeight,false);drawStamp(policy.outputWidth,policy.outputHeight);EGLExt.eglPresentationTimeANDROID(display,encoder,recorder.clock.next(System.nanoTime())*1000);if(!EGL14.eglSwapBuffers(display,encoder))throw new IllegalStateException("Encoder swap failed");recorder.drain(false);}
       sample();
       frames++;long now=SystemClock.elapsedRealtime();if(FrameHealth.reportDue(frames,now,lastReport)){lastReport=now;listener.onFrame(frames);}
     }catch(Exception failure){String error=failure instanceof java.io.IOException?failure.getMessage():"GPU/encoder: "+failure;if(recorder!=null)stopRecording(error);listener.onError(error);}
@@ -126,7 +163,7 @@ final class GlCameraRenderer {
   void close(){
     if(closed)return;closed=true;sampler=null;stopRecording();
     cameraTexture.setOnFrameAvailableListener(null);cameraSurface.release();cameraTexture.release();
-    try{makeCurrent(preview);clearPreview();if(sampleFramebuffer!=0){GLES20.glDeleteFramebuffers(1,new int[]{sampleFramebuffer},0);GLES20.glDeleteTextures(1,new int[]{sampleTexture},0);}GLES20.glDeleteTextures(1,new int[]{texture},0);GLES20.glDeleteProgram(program);}catch(Exception ignored){}
+    try{makeCurrent(preview);clearPreview();GLES20.glDeleteTextures(1,new int[]{stampTexture},0);GLES20.glDeleteProgram(stampProgram);stampBitmap.recycle();if(sampleFramebuffer!=0){GLES20.glDeleteFramebuffers(1,new int[]{sampleFramebuffer},0);GLES20.glDeleteTextures(1,new int[]{sampleTexture},0);}GLES20.glDeleteTextures(1,new int[]{texture},0);GLES20.glDeleteProgram(program);}catch(Exception ignored){}
     EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT);
     EGL14.eglDestroySurface(display,preview);EGL14.eglDestroyContext(display,eglContext);EGL14.eglReleaseThread();EGL14.eglTerminate(display);displaySurface.release();
   }

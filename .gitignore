@@ -1,6 +1,7 @@
 .gradle/
 **/build/
 local.properties
+guard-upload.properties
 .idea/
 *.iml
 .toolchains/

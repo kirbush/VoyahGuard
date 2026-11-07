@@ -4,7 +4,6 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
-import android.util.Log;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
@@ -24,13 +23,20 @@ import java.util.concurrent.atomic.AtomicReference;
 final class AdaptiveController implements GlCameraRenderer.FrameSampler {
   interface Listener {
     void onAdaptiveStatus(String text);
-    /** Somebody was near the car at this moment. Analysis thread. */
-    void onMotion(long now);
+    /** Somebody was near the car at this moment; gaps in metres per zone, for the alarm. Analysis thread. */
+    void onMotion(long now, double[] gaps);
+    /** Something travels across the camera panel, further away. Analysis thread. */
+    void onCameraMotion(long now);
     /** Whether the absence of onMotion means anything. Any thread. */
     void onWatching(boolean trusted, long now);
   }
   private static final String TAG = "SentryAdaptive";
   private static final long GUARD_MS = 5000;
+  /** A fresh camera-panel model needs a moment to learn the new picture as background. */
+  private static final long CAMERA_WARMUP_MS = 3000;
+  private final CameraTracker tracker = new CameraTracker();
+  private int cameraMarker, markerCandidate, markerVotes;
+  private long cameraSince;
   private static final int LOG_LIMIT_BYTES = 4 * 1024 * 1024;
 
   private final Context context;
@@ -86,7 +92,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
           if (commanded) { if (wasThreeD) AvmViewControl.sendButton(back); else AvmViewControl.send(back); }
           if (opened) AvmViewControl.close();
         }
-      } catch (Exception error) { Log.w(TAG, "Return", error); }
+      } catch (Exception error) { AppLog.w(TAG, "Return", error); }
       commanded = false; opened = false;
     });
     publish("");
@@ -128,7 +134,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     long now = SystemClock.elapsedRealtime();
     int start = threeD ? AvmLayout.HOME_3D : AvmLayout.FRONT;
     policy = new AdaptiveViewPolicy(now, start, threeD ? AvmLayout.BUTTONS : AvmLayout.VIEWS, threeD);
-    lastGuard = now; samples = 0; dropped = 0; home = start; motionStreak = 0; detectFrom = now + AdaptiveViewPolicy.WARMUP_MS;
+    lastGuard = now; samples = 0; dropped = 0; home = start; motionStreak = 0; detectFrom = now + AdaptiveViewPolicy.WARMUP_MS; cameraMarker = Integer.MIN_VALUE;
     openLog();
     detecting = true;
     if (follow) { active = true; publish("Адаптивный вид: определение ракурса"); }
@@ -179,6 +185,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       samples++;
       record(started, marker, current, reading, request, took);
       detect(started, reading, !following || current.settled(started));
+      detectCamera(started, marker, reading);
       if (request != AvmLayout.VIEW_UNKNOWN) command(run, current, request);
       if (following) {
         if (current.stopped() != AdaptiveViewPolicy.Stop.NONE) halt(run, reason(current.stopped()), false);
@@ -187,7 +194,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       }
       if (started - lastGuard >= GUARD_MS) { lastGuard = started; control.execute(() -> guard(run)); }
     } catch (Exception error) {
-      Log.w(TAG, "Analysis", error);
+      AppLog.w(TAG, "Analysis", error);
       halt(run, "анализ: " + error.getMessage(), false);
     }
   }
@@ -197,7 +204,20 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
     boolean near = false;
     for (boolean side : reading.near) near |= side;
     motionStreak = near && settled && !reading.rejected && now >= detectFrom ? motionStreak + 1 : 0;
-    if (motionStreak >= AdaptiveViewPolicy.CONFIRM_SAMPLES) listener.onMotion(now);
+    if (motionStreak >= AdaptiveViewPolicy.CONFIRM_SAMPLES) listener.onMotion(now, reading.gaps);
+  }
+
+  /** The panel counts only while it keeps showing the same camera; a switch starts it over. */
+  private void detectCamera(long now, int marker, MotionAnalyzer.Reading reading) {
+    if (marker != cameraMarker) {
+      if (marker != markerCandidate) { markerCandidate = marker; markerVotes = 0; }
+      if (++markerVotes < 2) return; // a glyph read once is not a switch of camera
+      cameraMarker = marker; cameraSince = now; tracker.reset(); analyzer.resetCamera(); return;
+    }
+    markerVotes = 0;
+    if (now < detectFrom || now - cameraSince < CAMERA_WARMUP_MS) return;
+    if (reading.cameraNoisy) { tracker.reset(); return; }
+    if (tracker.update(now, reading.cameraCentres)) listener.onCameraMotion(now);
   }
 
   private void command(int run, AdaptiveViewPolicy current, int view) {
@@ -263,7 +283,7 @@ final class AdaptiveController implements GlCameraRenderer.FrameSampler {
       File dir = context.getExternalFilesDir(null);
       if (dir == null) return;
       File file = new File(dir, "adaptive-log.csv"), previous = new File(dir, "adaptive-log.1.csv");
-      if (file.exists() && !file.renameTo(previous)) Log.w(TAG, "Log rotation failed");
+      if (file.exists() && !file.renameTo(previous)) AppLog.w(TAG, "Log rotation failed");
       log = new BufferedWriter(new FileWriter(file));
       log.write("elapsed_ms,marker,current,home,active,settled,top_blob,near,rejected,request,reason,took_ms,dropped\n");
       logged = 0;
