@@ -12,6 +12,8 @@ public final class AllPolicyTests {
     ParkedPolicyTest.main(args);
     PowerHoldPolicyTest.main(args);
     AdaptiveViewPolicyTest.main(args);
+    TesterCodeTest.main(args);
+    CameraTrackerTest.main(args);
     System.out.println("PASS: all Sentry Lite software policies (hardware compatibility untested)");
   }
 }

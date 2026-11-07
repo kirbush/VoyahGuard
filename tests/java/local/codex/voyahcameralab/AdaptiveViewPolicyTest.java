@@ -257,6 +257,14 @@ public final class AdaptiveViewPolicyTest {
     check(AvmLayout.zone(200, 600) == AvmLayout.LEFT, "left zone");
     check(AvmLayout.zone(680, 600) == AvmLayout.RIGHT, "right zone");
     check(AvmLayout.zone(440, 600) == NO, "car body has no direction");
+    check(AvmLayout.zone(680, 300) == AvmLayout.FRONT && AvmLayout.zone(200, 200) == AvmLayout.FRONT, "a shadow at the front corner stays in front");
+    check(AvmLayout.zone(680, 900) == AvmLayout.REAR, "the rear corner stays behind");
+    check(AvmLayout.zone(680, 450) == AvmLayout.RIGHT && AvmLayout.zone(200, 750) == AvmLayout.LEFT, "beside the body is a side");
+    check(AvmLayout.gapMetres(380, 160, 460, 280) == 0, "a box over the bumper touches the car");
+    check(Math.abs(AvmLayout.gapMetres(380, 60, 460, 160) - 105 / AvmLayout.ALONG_PER_METRE) < 1e-9, "ahead of the car the gap runs along it: about 0.8 m");
+    check(Math.abs(AvmLayout.gapMetres(200, 400, 268, 500) - 1.0) < 1e-9, "beside the car it runs across: 87 px is a metre");
+    check(Math.abs(AvmLayout.blobGapMetres(400, 30, 480, 95, false) - 100 / AvmLayout.ALONG_PER_METRE) < 1e-9, "a blob reaching the front button is taken at the middle of the hidden strip");
+    check(AvmLayout.blobGapMetres(300, 30, 340, 80, false) == AvmLayout.gapMetres(300, 30, 340, 80), "away from the buttons the visible gap stands");
   }
 
   private static void paintArc(byte[] rgba, int x0, int y0, int x1, int y1) {

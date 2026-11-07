@@ -45,6 +45,7 @@ final class RecordingStore {
     final Uri uri;final String name;final long size,wallMs;private final ContentResolver resolver;
     Video(ContentResolver resolver,Uri uri,String name,long size,long wallMs){this.resolver=resolver;this.uri=uri;this.name=name;this.size=size;this.wallMs=wallMs;}
     boolean event(){return StoragePolicy.isEvent(name);}
+    boolean camera(){return StoragePolicy.isCamera(name);}
     @Override public long bytes(){return size;}
     @Override public boolean reclaim(){try{return resolver.delete(uri,null,null)>0;}catch(RuntimeException failure){return false;}}
   }
@@ -97,18 +98,19 @@ final class RecordingStore {
   long roomForCopy() throws IOException {return space()[1]-StoragePolicy.RESERVE_BYTES;}
 
   /**
-   * Under pressure footage without events goes first, then events, oldest first in both. The
+   * Under pressure quiet footage goes first, then motion further away, then events, oldest first. The
    * newest finished video stays. The start of the running video counts as its oldest footage.
    */
   void ensureSpace(VideoSession running) throws IOException {
     long[] space=space();
     if(StoragePolicy.hasSpace(space[0],space[1],maximumPercent()))return;
-    List<Video> records=new ArrayList<>(),events=new ArrayList<>();
+    List<Video> records=new ArrayList<>(),cameras=new ArrayList<>(),events=new ArrayList<>();
     List<Video> videos=list();
-    for(int i=videos.size()-1;i>0;i--)(videos.get(i).event()?events:records).add(videos.get(i));
+    for(int i=videos.size()-1;i>0;i--)(videos.get(i).event()?events:videos.get(i).camera()?cameras:records).add(videos.get(i));
     List<StoragePolicy.Reclaimable> start=running==null?new ArrayList<>():running.heldStart();
-    boolean event=running!=null&&running.inEvent();
-    StoragePolicy.ensureSpace(this::space,cycle(),maximumPercent(),StoragePolicy.reclaimOrder(records,event?new ArrayList<>():start,events,event?start:new ArrayList<>()));
+    boolean event=running!=null&&running.inEvent(),near=event&&running.inNearEvent();
+    List<StoragePolicy.Reclaimable> none=new ArrayList<>();
+    StoragePolicy.ensureSpace(this::space,cycle(),maximumPercent(),StoragePolicy.reclaimOrder(records,event?none:start,cameras,event&&!near?start:none,events,near?start:none));
   }
 
   Uri createPending(String name,long wallMs) throws IOException {

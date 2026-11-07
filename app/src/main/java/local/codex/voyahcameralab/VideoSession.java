@@ -2,7 +2,6 @@ package local.codex.voyahcameralab;
 
 import android.content.Context;
 import android.net.Uri;
-import android.util.Log;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -29,9 +28,9 @@ final class VideoSession {
   private long watchedSince = -1, lastStamp;
   private int sequence, closed;
 
-  VideoSession(Context context, boolean keepQuiet, Consumer<Uri> saved) throws IOException {
+  VideoSession(Context context, boolean keepQuiet, boolean nearOnly, Consumer<Uri> saved) throws IOException {
     store = new RecordingStore(context);
-    timeline = new VideoTimeline(keepQuiet);
+    timeline = new VideoTimeline(keepQuiet, nearOnly);
     this.saved = saved;
     VideoPublisher.live(session);
     directory = store.sessionDirectory(session);
@@ -64,9 +63,12 @@ final class VideoSession {
     else if (!on) watchedSince = -1;
   }
 
-  synchronized void motion(long now) { apply(timeline.motion(now)); }
+  synchronized void motion(long now) { apply(timeline.motion(now, true)); }
+
+  synchronized void cameraMotion(long now) { apply(timeline.motion(now, false)); }
 
   synchronized boolean inEvent() { return timeline.inEvent(); }
+  synchronized boolean inNearEvent() { return timeline.inNearEvent(); }
 
   /** Queued after the last video, so the session stays protected from recovery until then. */
   synchronized void finish() {
@@ -78,7 +80,7 @@ final class VideoSession {
   private void removeDirectory() {
     File[] files = directory.listFiles();
     if (files != null) for (File file : files) if (file.getName().endsWith(".part")) file.delete();
-    if (directory.delete()) Log.d(TAG, "Session done: " + session);
+    if (directory.delete()) AppLog.d(TAG, "Session done: " + session);
   }
 
   private void apply(VideoTimeline.Step step) {
@@ -90,8 +92,8 @@ final class VideoSession {
     VideoPublisher.submit(() -> {
       List<File> parts = new ArrayList<>();
       for (VideoTimeline.Chunk chunk : video.chunks) parts.add(chunk.file);
-      try { VideoPublisher.join(store, parts, video.kind == VideoTimeline.Kind.EVENT, saved); }
-      catch (IOException failure) { Log.w(TAG, "Video not joined, chunks kept", failure); }
+      try { VideoPublisher.join(store, parts, video.kind, saved); }
+      catch (IOException failure) { AppLog.w(TAG, "Video not joined, chunks kept", failure); }
     });
   }
 
@@ -103,7 +105,7 @@ final class VideoSession {
     SPACE.execute(() -> {
       try { store.ensureSpace(this); }
       catch (IOException error) { spaceFailure = error; }
-      catch (RuntimeException error) { Log.w(TAG, "Space check", error); } // MediaStore must not end the recording.
+      catch (RuntimeException error) { AppLog.w(TAG, "Space check", error); } // MediaStore must not end the recording.
       finally { spaceCheck.set(false); }
     });
   }

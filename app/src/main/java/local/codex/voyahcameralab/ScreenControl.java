@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.IBinder;
 import android.os.Parcel;
-import android.util.Log;
 
 /**
  * Darkens the screens through the OEM power and backlight services, both open to any app.
@@ -33,7 +32,7 @@ final class ScreenControl implements ServiceConnection {
   void connect() {
     if (bound) return;
     try { bound = context.bindService(new Intent(POLICY_ACTION).setPackage(POLICY_PACKAGE), this, Context.BIND_AUTO_CREATE); }
-    catch (RuntimeException failure) { Log.w(TAG, "Backlight service", failure); }
+    catch (RuntimeException failure) { AppLog.w(TAG, "Backlight service", failure); }
   }
 
   void disconnect() {
@@ -80,7 +79,7 @@ final class ScreenControl implements ServiceConnection {
       reply.readException();
       return true; // The call reports false for this override even when it is applied.
     } catch (Exception failure) {
-      Log.w(TAG, "Backlight", failure);
+      AppLog.w(TAG, "Backlight", failure);
       return false;
     } finally {
       data.recycle();

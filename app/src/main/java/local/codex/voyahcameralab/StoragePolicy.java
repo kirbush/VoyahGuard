@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 /** Volume pressure and naming rules, independent of Android/media APIs. */
 final class StoragePolicy {
   static final long RESERVE_BYTES=128L*1024*1024;
-  static final String EVENT_SUFFIX="_event";
+  static final String EVENT_SUFFIX="_event",CAMERA_SUFFIX="_camera";
   private static final String VIDEO_TIME="yyyy-MM-dd_HH-mm-ss";
   private static final Pattern CHUNK=Pattern.compile("[0-9]{13}-[0-9]{6}\\.mp4");
   private static final Pattern SESSION=Pattern.compile("[0-9a-f]{32}");
@@ -54,20 +54,25 @@ final class StoragePolicy {
   /** When the footage of a chunk or an old clip began. */
   static long wallOf(String name,long fallback){return isChunk(name)?chunkWall(name):isLegacy(name)?legacyWall(name):fallback;}
 
-  /** Sorts by time in any file manager, and an event is visible from the name alone. */
-  static String videoName(long wallMs,boolean event){
-    return new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).format(new Date(wallMs))+(event?EVENT_SUFFIX:"")+".mp4";
+  /** Sorts by time in any file manager, and what happened is visible from the name alone. */
+  static String videoName(long wallMs,VideoTimeline.Kind kind){
+    String suffix=kind==VideoTimeline.Kind.EVENT?EVENT_SUFFIX:kind==VideoTimeline.Kind.CAMERA?CAMERA_SUFFIX:"";
+    return new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).format(new Date(wallMs))+suffix+".mp4";
   }
   static long videoWall(String name,long fallback){
     Date time=new SimpleDateFormat(VIDEO_TIME,Locale.ROOT).parse(name,new ParsePosition(0));
     return time==null?fallback:time.getTime();
   }
   static boolean isEvent(String name){return name.endsWith(EVENT_SUFFIX+".mp4");}
+  static boolean isCamera(String name){return name.endsWith(CAMERA_SUFFIX+".mp4");}
 
-  /** Oldest footage goes first, footage without an event before any event. */
-  static List<Reclaimable> reclaimOrder(List<? extends Reclaimable> oldRecords,List<? extends Reclaimable> runningRecord,List<? extends Reclaimable> oldEvents,List<? extends Reclaimable> runningEvent){
+  /**
+   * Quiet footage goes first, then motion further away, then people near the car; oldest first in
+   * each. The start of the running video counts as the oldest footage of its kind.
+   */
+  static List<Reclaimable> reclaimOrder(List<? extends Reclaimable> oldRecords,List<? extends Reclaimable> runningRecord,List<? extends Reclaimable> oldCamera,List<? extends Reclaimable> runningCamera,List<? extends Reclaimable> oldEvents,List<? extends Reclaimable> runningEvent){
     List<Reclaimable> order=new ArrayList<>(oldRecords);
-    order.addAll(runningRecord);order.addAll(oldEvents);order.addAll(runningEvent);
+    order.addAll(runningRecord);order.addAll(oldCamera);order.addAll(runningCamera);order.addAll(oldEvents);order.addAll(runningEvent);
     return order;
   }
 

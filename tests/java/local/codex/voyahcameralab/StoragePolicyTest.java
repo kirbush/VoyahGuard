@@ -28,8 +28,8 @@ public final class StoragePolicyTest {
     int[] probes={0};Item e=new Item(60*M,new long[1]),f=new Item(60*M,new long[1]);
     expectStop(()->{probes[0]++;return new long[]{2000*M,100*M};},true,java.util.Arrays.asList(e,f));
     check(e.gone&&f.gone&&probes[0]==3,"A deletion that frees less than promised stops bounded");
-    java.util.List<StoragePolicy.Reclaimable> order=StoragePolicy.reclaimOrder(java.util.Arrays.asList(a),java.util.Arrays.asList(b),java.util.Arrays.asList(c),java.util.Arrays.asList(d));
-    check(order.get(0)==a&&order.get(1)==b&&order.get(2)==c&&order.get(3)==d,"Footage without events goes before any event");
+    java.util.List<StoragePolicy.Reclaimable> order=StoragePolicy.reclaimOrder(java.util.Arrays.asList(a),java.util.Arrays.asList(b),java.util.Arrays.asList(e),java.util.Arrays.asList(f),java.util.Arrays.asList(c),java.util.Arrays.asList(d));
+    check(order.get(0)==a&&order.get(1)==b&&order.get(2)==e&&order.get(3)==f&&order.get(4)==c&&order.get(5)==d,"Quiet footage goes first, then motion further away, running or not, then events");
   }
   public static void main(String[] args) throws Exception {
     check(StoragePolicy.nextStamp(1761000000000L,1762000000000L)==1762000000001L,"Clock rollback must not make the next recorded clip sort before previous clips");
@@ -49,8 +49,9 @@ public final class StoragePolicyTest {
     String legacy="sentry-1762000000000-0123456789abcdef0123456789abcdef-000004.mp4";
     check(StoragePolicy.isLegacy(legacy)&&StoragePolicy.legacyWall(legacy)==1762000000000L&&StoragePolicy.legacySession(legacy).length()==32,"Clips of 0.6 are recognised");
     check(!StoragePolicy.isLegacy("family.mp4"),"A foreign file is never migrated");
-    String event=StoragePolicy.videoName(1762000000000L,true),plain=StoragePolicy.videoName(1762000000000L,false);
-    check(StoragePolicy.isEvent(event)&&!StoragePolicy.isEvent(plain),"An event is visible from the name");
+    String event=StoragePolicy.videoName(1762000000000L,VideoTimeline.Kind.EVENT),plain=StoragePolicy.videoName(1762000000000L,VideoTimeline.Kind.RECORD),far=StoragePolicy.videoName(1762000000000L,VideoTimeline.Kind.CAMERA);
+    check(StoragePolicy.isEvent(event)&&!StoragePolicy.isEvent(plain)&&!StoragePolicy.isEvent(far),"An event is visible from the name");
+    check(StoragePolicy.isCamera(far)&&!StoragePolicy.isCamera(event)&&!StoragePolicy.isCamera(plain)&&StoragePolicy.videoWall(far,0)==1762000000000L,"So is motion further away");
     check(StoragePolicy.videoWall(event,0)==1762000000000L&&StoragePolicy.videoWall(plain,0)==1762000000000L,"The name gives the time of the footage back");
     check(StoragePolicy.videoWall("holiday.mp4",7)==7,"A foreign name keeps the stored time");
     check(StoragePolicy.wallOf(StoragePolicy.chunkName(1762000000000L,3),7)==1762000000000L&&StoragePolicy.wallOf(legacy,7)==1762000000000L&&StoragePolicy.wallOf("x",7)==7,"Sources carry their start time");

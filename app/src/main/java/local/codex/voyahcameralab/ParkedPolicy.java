@@ -35,6 +35,13 @@ final class ParkedPolicy {
 
   List<Action> stop() { return update(null, false, false); }
 
+  /**
+   * Seen on the car: the Power Hold switch is 1 from locking outside until a door opens, so it
+   * outlives the unlock by seconds. The driver door lock turns 1 the moment the key unlocks.
+   * Without Power Hold the head unit sleeps after locking, so nothing here would run anyway.
+   */
+  static boolean locked(int powerHold, int driverDoorLock, int doorOpen) { return powerHold == 1 && driverDoorLock != 1 && doorOpen != 1; }
+
   /** Locked, and nothing says that somebody stayed inside. */
   static boolean guarded(Reading reading) { return reading != null && reading.armed && !reading.careMode; }
 }

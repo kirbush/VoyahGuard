@@ -7,6 +7,13 @@ import java.util.List;
 public final class ParkedPolicyTest {
   static void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
   static ParkedPolicy.Reading reading(boolean armed, boolean air, boolean care) { return new ParkedPolicy.Reading(armed, air, care); }
+  static void lockRule() {
+    check(ParkedPolicy.locked(1, 0, 0), "Power Hold on, driver door locked, doors shut: locked");
+    check(!ParkedPolicy.locked(1, 1, 0), "The key unlocked the door while Power Hold still shows 1: not locked any more");
+    check(!ParkedPolicy.locked(1, 0, 1), "A door is open: somebody is there");
+    check(!ParkedPolicy.locked(0, 0, 0), "Without Power Hold nothing counts as locked");
+    check(ParkedPolicy.locked(1, -1, -1), "A car that does not report doors still follows Power Hold");
+  }
   static final List<ParkedPolicy.Action> NOTHING = Collections.emptyList();
 
   public static void main(String[] args) {
@@ -35,6 +42,7 @@ public final class ParkedPolicyTest {
     ParkedPolicy stopped = new ParkedPolicy();
     stopped.update(reading(true, true, false), true, true);
     check(stopped.stop().equals(Arrays.asList(ParkedPolicy.Action.RESTORE_SCREENS, ParkedPolicy.Action.CLIMATE_ON)), "Stop undoes everything");
+    lockRule();
     System.out.println("PASS: parked screens and climate are undone on unlock, stop and unknown status");
   }
 }

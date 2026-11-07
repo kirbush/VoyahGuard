@@ -7,7 +7,6 @@ import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
-import android.util.Log;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -53,7 +52,7 @@ final class VideoPublisher {
     PENDING.incrementAndGet();
     JOBS.execute(() -> {
       try { job.run(); }
-      catch (RuntimeException failure) { Log.w(TAG, "Video job", failure); }
+      catch (RuntimeException failure) { AppLog.w(TAG, "Video job", failure); }
       finally { PENDING.decrementAndGet(); }
     });
   }
@@ -62,21 +61,21 @@ final class VideoPublisher {
   static void afterPending(Runnable work) { JOBS.execute(work); }
 
   /** One video, or several in a row when a single copy does not fit on the volume. */
-  static void join(RecordingStore store, List<File> parts, boolean event, Consumer<Uri> saved) throws IOException {
+  static void join(RecordingStore store, List<File> parts, VideoTimeline.Kind kind, Consumer<Uri> saved) throws IOException {
     int from = 0;
     while (from < parts.size()) {
       long room = store.roomForCopy(), bytes = 0;
       int to = from;
       while (to < parts.size() && (to == from || bytes + parts.get(to).length() <= room)) bytes += parts.get(to++).length();
-      saved.accept(publish(store, new ArrayList<>(parts.subList(from, to)), event));
+      saved.accept(publish(store, new ArrayList<>(parts.subList(from, to)), kind));
       from = to;
     }
   }
 
-  private static Uri publish(RecordingStore store, List<File> parts, boolean event) throws IOException {
+  private static Uri publish(RecordingStore store, List<File> parts, VideoTimeline.Kind kind) throws IOException {
     File first = parts.get(0);
     long wallMs = StoragePolicy.wallOf(first.getName(), first.lastModified());
-    Uri uri = store.createPending(StoragePolicy.videoName(wallMs, event), wallMs);
+    Uri uri = store.createPending(StoragePolicy.videoName(wallMs, kind), wallMs);
     List<File> joined;
     try {
       try (ParcelFileDescriptor file = store.openPending(uri)) { joined = join(parts, file.getFileDescriptor()); }
@@ -116,7 +115,7 @@ final class VideoPublisher {
             last = Math.max(last, time);
           }
         } catch (IOException damaged) {
-          Log.w(TAG, "Chunk skipped: " + part.getName(), damaged); // One bad chunk must not cost the video.
+          AppLog.w(TAG, "Chunk skipped: " + part.getName(), damaged); // One bad chunk must not cost the video.
         } finally {
           source.release();
         }
@@ -147,7 +146,7 @@ final class VideoPublisher {
         store.dropAbandonedPending();
         for (File session : store.sessions()) if (!LIVE.contains(session.getName())) recoverSession(store, session, saved);
         migrateLegacy(store, saved);
-      } catch (IOException failure) { Log.w(TAG, "Recovery", failure); }
+      } catch (IOException failure) { AppLog.w(TAG, "Recovery", failure); }
     });
   }
 
@@ -155,9 +154,9 @@ final class VideoPublisher {
     if (!StoragePolicy.isSession(session.getName())) return;
     try {
       List<File> chunks = StoragePolicy.chunks(session);
-      if (!chunks.isEmpty()) join(store, chunks, false, saved);
+      if (!chunks.isEmpty()) join(store, chunks, VideoTimeline.Kind.RECORD, saved);
       removeLeftovers(session);
-    } catch (IOException failure) { Log.w(TAG, "Recovery of " + session.getName(), failure); }
+    } catch (IOException failure) { AppLog.w(TAG, "Recovery of " + session.getName(), failure); }
   }
 
   private static void removeLeftovers(File session) {
@@ -180,7 +179,7 @@ final class VideoPublisher {
     List<List<File>> ordered = new ArrayList<>(sessions.values());
     for (List<File> clips : ordered) clips.sort(byTime);
     ordered.sort((a, b) -> byTime.compare(a.get(0), b.get(0)));
-    for (List<File> clips : ordered) join(store, clips, false, saved);
+    for (List<File> clips : ordered) join(store, clips, VideoTimeline.Kind.RECORD, saved);
     folder.delete();
   }
 }

@@ -46,14 +46,49 @@ final class AvmLayout {
   static int sample(int sourcePixels) { return sourcePixels / SCALE; }
   static int source(double samplePixels) { return (int) (samplePixels * SCALE); }
 
-  /** Nearest view for a top-view point; the corners belong to whichever axis is further out. */
+  /** Source pixels per metre on the ground, from the outline of the 1.96 × 4.9 m car; the frame is anamorphic. */
+  static final double ACROSS_PER_METRE = 87, ALONG_PER_METRE = 137;
+
+  /** Source pixels within which a blob counts as reaching a masked button. */
+  private static final int TOUCH = 12;
+
+  /**
+   * Ground distance of a blob from the body. The OEM buttons in the middle of each side hide the
+   * ground from about 0.2 to 1.3 m out, so a blob that reaches one may stand anywhere under it: it
+   * is taken at the middle of that hidden strip, between the two errors.
+   */
+  static double blobGapMetres(int x0, int y0, int x1, int y1, boolean threeD) {
+    double gap = gapMetres(x0, y0, x1, y1);
+    for (int i = 1; i < TOP_EXCLUDED.length; i++) gap = Math.min(gap, underButton(TOP_EXCLUDED[i], x0, y0, x1, y1));
+    if (threeD) for (int[] button : TOP_EXCLUDED_3D) gap = Math.min(gap, underButton(button, x0, y0, x1, y1));
+    return gap;
+  }
+
+  private static double underButton(int[] b, int x0, int y0, int x1, int y1) {
+    if (x1 < b[0] - TOUCH || x0 > b[2] + TOUCH || y1 < b[1] - TOUCH || y0 > b[3] + TOUCH) return Double.POSITIVE_INFINITY;
+    int x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
+    return gapMetres(x, y, x, y);
+  }
+
+  /** Ground distance in metres between a box of the top view (source pixels) and the car outline; 0 when they touch. */
+  static double gapMetres(int x0, int y0, int x1, int y1) {
+    int across = Math.max(0, Math.max(CAR_LEFT - x1, x0 - CAR_RIGHT)), along = Math.max(0, Math.max(CAR_TOP - y1, y0 - CAR_BOTTOM));
+    return Math.hypot(across / ACROSS_PER_METRE, along / ALONG_PER_METRE);
+  }
+
+  /** About 0.85 m of the body behind each bumper, up to the wheel arch: corners there belong to the front or rear view. */
+  static final int CORNER = 120;
+
+  /**
+   * View for a top-view point. Seen on the car: somebody walking past the bumper threw a shadow into
+   * the front corner and the view jumped to the side camera, so a side view now needs the person
+   * beside the body, not ahead of it or behind it.
+   */
   static int zone(int sourceX, int sourceY) {
-    int dx = sourceX < CAR_LEFT ? CAR_LEFT - sourceX : sourceX > CAR_RIGHT ? sourceX - CAR_RIGHT : 0;
-    int dy = sourceY < CAR_TOP ? CAR_TOP - sourceY : sourceY > CAR_BOTTOM ? sourceY - CAR_BOTTOM : 0;
-    if (dx == 0 && dy == 0) return VIEW_UNKNOWN;
-    // 1920×1200 is anamorphic: a source pixel covers 5/3 less height than width on the ground.
-    if (dx * 5 >= dy * 3) return sourceX < CAR_LEFT ? LEFT : RIGHT;
-    return sourceY < CAR_TOP ? FRONT : REAR;
+    boolean beside = sourceX < CAR_LEFT || sourceX > CAR_RIGHT;
+    if (sourceY < CAR_TOP + CORNER) return beside || sourceY < CAR_TOP ? FRONT : VIEW_UNKNOWN;
+    if (sourceY > CAR_BOTTOM - CORNER) return beside || sourceY > CAR_BOTTOM ? REAR : VIEW_UNKNOWN;
+    return beside ? (sourceX < CAR_LEFT ? LEFT : RIGHT) : VIEW_UNKNOWN;
   }
 
   /** Direction of a top-view point as one of eight sectors clockwise from ahead, or VIEW_UNKNOWN on the car. */

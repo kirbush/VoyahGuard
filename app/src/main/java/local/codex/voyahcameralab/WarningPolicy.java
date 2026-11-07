@@ -3,26 +3,69 @@ package local.codex.voyahcameralab;
 import java.util.ArrayDeque;
 
 /**
- * When the voice warning may play. Pure logic, fed with every moment the detector sees somebody
- * next to the car. A passer-by stays a few seconds and hears nothing; only somebody who keeps
- * walking around does. A shadow that never leaves must not shout all night, so plays are limited.
+ * When the voice warning plays. Pure logic, fed with every moment the detector sees somebody
+ * next to the car. A passer-by is gone before the delay and hears nothing. Somebody who stays
+ * is warned, and warned again at the chosen interval for as long as they stay. They count as
+ * gone once the area around the car has been quiet for a while. A shadow that never leaves
+ * must not shout all night, so plays per hour are limited. The owner picks the numbers.
  */
 final class WarningPolicy {
-  static final long PRESENCE_MS = 8000, GAP_MS = 5000, COOLDOWN_MS = 60000, WINDOW_MS = 3600000;
-  static final int MAX_PER_WINDOW = 6;
+  static final long GAP_MS = 8000, WINDOW_MS = 3600000;
+  static final int[] DELAY_SECONDS = {10, 15, 30, 60};
+  /** 0 means once per stay. */
+  static final int[] REPEAT_SECONDS = {10, 20, 30, 60, 0};
+  static final int[] PER_HOUR = {10, 30, 60};
+  static final int[] PHRASES = {1, 2, 3};
+  /** Per side, how close somebody must come to count, in centimetres; 0 never, ANYWHERE in the whole panorama. */
+  static final int ANYWHERE = 10000;
+  static final int[] REACH_CM = {0, 25, 50, 100, ANYWHERE};
+  /**
+   * Defaults in AvmLayout zone order: front, left, rear, right. The owner, seen on a recording:
+   * people passing in front of the car are no reason for an alarm unless they are right at the body.
+   */
+  static final int[] DEFAULT_REACH_CM = {50, ANYWHERE, ANYWHERE, ANYWHERE};
 
+  /** @param gapMetres per zone, from the body to the nearest person; reachCm per zone, as the owner chose */
+  static boolean alarming(double[] gapMetres, int[] reachCm) {
+    for (int zone = 0; zone < reachCm.length; zone++) if (reachCm[zone] > 0 && gapMetres[zone] * 100 <= reachCm[zone]) return true;
+    return false;
+  }
+  static final int DEFAULT_DELAY = 15, DEFAULT_REPEAT = 10, DEFAULT_PER_HOUR = 60, DEFAULT_PHRASES = 2;
+
+  private final long delayMs, repeatMs;
+  private final int perHour;
   private final ArrayDeque<Long> played = new ArrayDeque<>();
-  private long firstSeen, lastSeen;
-  private boolean present;
+  private long firstSeen, lastSeen, lastPlayed;
+  private boolean present, warned;
+
+  WarningPolicy(int delaySeconds, int repeatSeconds, int perHour) {
+    delayMs = pick(DELAY_SECONDS, delaySeconds, DEFAULT_DELAY) * 1000L;
+    repeatMs = pick(REPEAT_SECONDS, repeatSeconds, DEFAULT_REPEAT) * 1000L;
+    this.perHour = pick(PER_HOUR, perHour, DEFAULT_PER_HOUR);
+  }
+
+  /** Rebuilding the policy forgets who is standing there, so it happens only for new numbers. */
+  boolean sameSettings(int delaySeconds, int repeatSeconds, int perHour) {
+    return delayMs == pick(DELAY_SECONDS, delaySeconds, DEFAULT_DELAY) * 1000L && repeatMs == pick(REPEAT_SECONDS, repeatSeconds, DEFAULT_REPEAT) * 1000L
+        && this.perHour == pick(PER_HOUR, perHour, DEFAULT_PER_HOUR);
+  }
+
+  /** A stored value that is not on offer falls back to the default. */
+  static int pick(int[] allowed, int value, int fallback) {
+    for (int candidate : allowed) if (candidate == value) return value;
+    return fallback;
+  }
 
   boolean onMotion(long now) {
-    if (!present || now - lastSeen > GAP_MS) { present = true; firstSeen = now; }
+    if (!present || now - lastSeen > GAP_MS) { present = true; warned = false; firstSeen = now; }
     lastSeen = now;
-    if (now - firstSeen < PRESENCE_MS) return false;
+    if (now - firstSeen < delayMs) return false;
+    if (warned && (repeatMs == 0 || now - lastPlayed < repeatMs)) return false;
     while (!played.isEmpty() && now - played.peekFirst() >= WINDOW_MS) played.removeFirst();
-    if (played.size() >= MAX_PER_WINDOW) return false;
-    if (!played.isEmpty() && now - played.peekLast() < COOLDOWN_MS) return false;
+    if (played.size() >= perHour) return false;
     played.addLast(now);
+    warned = true;
+    lastPlayed = now;
     return true;
   }
 }

@@ -1,6 +1,12 @@
 plugins { id 'com.android.application' }
 
 def customKeystore = providers.environmentVariable('VOYAH_SIGNING_KEYSTORE').orNull
+// Log receiver for tester reports. Kept out of Git: guard-upload.properties (ignored; BUILD-LOCAL rewrites
+// local.properties) or the environment. Empty disables sending.
+def uploadProperties = new Properties()
+if (rootProject.file('guard-upload.properties').isFile()) rootProject.file('guard-upload.properties').withInputStream { uploadProperties.load(it) }
+def uploadEndpoint = providers.environmentVariable('VOYAH_GUARD_UPLOAD_ENDPOINT').orNull ?: uploadProperties.getProperty('guard.upload.endpoint', '')
+if (!uploadEndpoint.isEmpty() && !(uploadEndpoint ==~ /https:\/\/[A-Za-z0-9.:\-\[\]]+\/voyah-guard\/v1/)) throw new GradleException('guard.upload.endpoint must be https://host[:port]/voyah-guard/v1')
 def generatedNative = layout.buildDirectory.dir('generated/avmview')
 interface ExecInjection { @javax.inject.Inject ExecOperations getExec() }
 android {
@@ -11,11 +17,12 @@ android {
         applicationId 'local.codex.voyahcameralab'
         minSdk 30
         targetSdk 30
-        versionCode 8
-        versionName '0.7-alpha'
+        versionCode 9
+        versionName '0.8-beta'
         testApplicationId 'local.codex.voyahcameratest'
         testInstrumentationRunner 'local.codex.voyahcameratest.Smoke'
         ndk { abiFilters 'arm64-v8a' } // The head unit; the OpenCV AAR ships other ABIs too.
+        resValue 'string', 'upload_endpoint', uploadEndpoint
     }
     signingConfigs {
         if (customKeystore) {
@@ -81,6 +88,8 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         'src/main/java/local/codex/voyahcameralab/PowerHoldPolicy.java',
         'src/main/java/local/codex/voyahcameralab/AvmLayout.java',
         'src/main/java/local/codex/voyahcameralab/AdaptiveViewPolicy.java',
+        'src/main/java/local/codex/voyahcameralab/TesterCode.java',
+        'src/main/java/local/codex/voyahcameralab/CameraTracker.java',
         '../tests/java/local/codex/voyahcameralab/PolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/LaunchPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/StoragePolicyTest.java',
@@ -90,6 +99,8 @@ def policyCompile = tasks.register('compileCorePolicyTest', JavaCompile) {
         '../tests/java/local/codex/voyahcameralab/ParkedPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/PowerHoldPolicyTest.java',
         '../tests/java/local/codex/voyahcameralab/AdaptiveViewPolicyTest.java',
+        '../tests/java/local/codex/voyahcameralab/TesterCodeTest.java',
+        '../tests/java/local/codex/voyahcameralab/CameraTrackerTest.java',
         '../tests/java/local/codex/voyahcameralab/AllPolicyTests.java')
     classpath = files()
     destinationDirectory.set(policyClasses)
