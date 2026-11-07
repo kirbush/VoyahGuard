@@ -35,9 +35,13 @@ public final class GuardBridge {
   private int readVehicle(String name) throws Exception { return ((Number) vehicleGetter.invoke(service, vehicle.getField(name).get(null))).intValue(); }
   private int readAir(String name) throws Exception { return ((Number) airGetter.invoke(service, air.getField(name).get(null))).intValue(); }
 
-  /** One line: armed, climate power, camp mode, care mode, as the OEM reports them. */
+  /**
+   * One line: Power Hold switch, climate power, camp mode, care mode, as the OEM reports them.
+   * The body unit sleeps on a locked car, so its anti-theft signals stay stale in the head unit.
+   * The Power Hold switch turns on only after locking from outside and off on unlock.
+   */
   private String status() throws Exception {
-    return DONE + "\t" + readVehicle("ANTI_THEFT_STATUS") + "\t" + readAir(AIR_POWER) + "\t" + readVehicle("CAMP_MODE_SWITCH") + "\t" + readAir("AC_BABY_CARE_MODE");
+    return DONE + "\t" + readVehicle("POWER_HOLD_MODE_SWITCH") + "\t" + readAir(AIR_POWER) + "\t" + readVehicle("CAMP_MODE_SWITCH") + "\t" + readAir("AC_BABY_CARE_MODE");
   }
 
   private String switchAir(int value) throws Exception {

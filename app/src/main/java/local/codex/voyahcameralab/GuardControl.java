@@ -9,10 +9,11 @@ final class GuardControl {
     String[] fields = AvmViewControl.bridge(GuardBridge.class.getName(), GuardBridge.STATUS).split("\t");
     if (fields.length != 5 || !GuardBridge.DONE.equals(fields[0])) return null;
     try {
-      int armed = Integer.parseInt(fields[1].trim()), air = Integer.parseInt(fields[2].trim());
+      int hold = Integer.parseInt(fields[1].trim()), air = Integer.parseInt(fields[2].trim());
       int camp = Integer.parseInt(fields[3].trim()), care = Integer.parseInt(fields[4].trim());
-      // The OEM power code treats 1 and 2 as armed.
-      return new ParkedPolicy.Reading(armed == 1 || armed == 2, air == 1, camp == 1 || care == 1);
+      // Seen on the car: the switch is 1 from locking outside until the unlock. Without Power Hold
+      // the head unit sleeps after locking, so the options have nothing to do then anyway.
+      return new ParkedPolicy.Reading(hold == 1, air == 1, camp == 1 || care == 1);
     } catch (NumberFormatException garbled) { return null; }
   }
 
