@@ -18,7 +18,8 @@ final class ParkedMode {
   private final ScreenControl screens;
   private final VoiceWarning voice;
   private final ParkedPolicy policy = new ParkedPolicy();
-  private final WarningPolicy warning = new WarningPolicy();
+  private volatile WarningPolicy warning = new WarningPolicy(WarningPolicy.DEFAULT_DELAY, WarningPolicy.DEFAULT_REPEAT, WarningPolicy.DEFAULT_PER_HOUR);
+  private volatile int phrases = WarningPolicy.DEFAULT_PHRASES;
   private final HandlerThread thread = new HandlerThread("SentryParked");
   private final Handler handler;
   private final Runnable tick = this::tick, retry = this::retryRestore;
@@ -46,6 +47,9 @@ final class ParkedMode {
     screensOption = preferences.getBoolean("screens_off", false);
     climateOption = preferences.getBoolean("climate_off", false);
     voiceOption = preferences.getBoolean("voice_warning", false);
+    warning = new WarningPolicy(preferences.getInt("voice_delay_seconds", WarningPolicy.DEFAULT_DELAY),
+        preferences.getInt("voice_repeat_seconds", WarningPolicy.DEFAULT_REPEAT), preferences.getInt("voice_per_hour", WarningPolicy.DEFAULT_PER_HOUR));
+    phrases = WarningPolicy.pick(WarningPolicy.PHRASES, preferences.getInt("voice_phrases", WarningPolicy.DEFAULT_PHRASES), WarningPolicy.DEFAULT_PHRASES);
     boolean wanted = screensOption || climateOption || voiceOption;
     if (wanted == running) return;
     running = wanted;
@@ -65,7 +69,7 @@ final class ParkedMode {
     handler.post(() -> { voice.stop(); voice.endScenario(); retryRestore(); screens.disconnect(); thread.quitSafely(); });
   }
 
-  void testVoice() { handler.post(() -> voice.play(false)); }
+  void testVoice() { handler.post(() -> voice.play(false, phrases)); }
 
   /** Analysis thread. Only a guarded car speaks: nobody is shouted at from inside their own car. */
   void onMotion(long now) {
@@ -74,7 +78,7 @@ final class ParkedMode {
 
   /** The owner at the door may have unlocked since the last reading. */
   private void warn() {
-    if (ParkedPolicy.guarded(GuardControl.read())) voice.play(true);
+    if (ParkedPolicy.guarded(GuardControl.read())) voice.play(true, phrases);
   }
 
   private void tick() {

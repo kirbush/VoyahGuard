@@ -18,7 +18,7 @@ import android.util.Log;
 final class VoiceWarning {
   private static final String TAG = "SentryVoice";
   private static final String SAVED = "media_volume_before";
-  private static final int STREAM = AudioManager.STREAM_MUSIC, REPEATS = 2;
+  private static final int STREAM = AudioManager.STREAM_MUSIC;
   private final Context context;
   private final SharedPreferences preferences;
   private final AudioManager audio;
@@ -33,8 +33,11 @@ final class VoiceWarning {
     audio = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
   }
 
-  /** @param holdVolume keep the volume up for later warnings until {@link #endScenario()} */
-  void play(boolean holdVolume) {
+  /**
+   * @param holdVolume keep the volume up for later warnings until {@link #endScenario()}
+   * @param phrases how many times in a row the phrase is said
+   */
+  void play(boolean holdVolume, int phrases) {
     if (playing) return;
     keepLoud = holdVolume;
     try {
@@ -46,7 +49,7 @@ final class VoiceWarning {
     try { player = MediaPlayer.create(context, R.raw.step_away, attributes, audio.generateAudioSessionId()); }
     catch (RuntimeException failure) { Log.w(TAG, "Player", failure); }
     if (player == null) { stop(); return; }
-    int[] left = {REPEATS};
+    int[] left = {Math.max(1, phrases)};
     player.setOnCompletionListener(done -> {
       if (--left[0] > 0) done.start();
       else stop();

@@ -19,6 +19,10 @@
     <item name="follow_button" type="id"/>
     <item name="voice_warning_checkbox" type="id"/>
     <item name="voice_test_button" type="id"/>
+    <item name="voice_delay_picker" type="id"/>
+    <item name="voice_phrases_picker" type="id"/>
+    <item name="voice_repeat_picker" type="id"/>
+    <item name="voice_per_hour_picker" type="id"/>
     <item name="climate_off_checkbox" type="id"/>
     <item name="screens_off_checkbox" type="id"/>
     <item name="padding_correction_checkbox" type="id"/>
