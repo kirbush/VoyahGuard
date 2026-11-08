@@ -77,6 +77,62 @@ public final class PowerHoldPolicyTest {
     check("timeout".equals(oldActivity.serialized(System.nanoTime() - 1,
         () -> "incorrectly executed", () -> "timeout")), "Expired lock deadline cannot launch an operation");
   }
+  private static void unverifiedFirmware() {
+    String h = "e46d3e5db0cf932cd3a39654a2f95620f2668ada8fb32b904c1684f936eca510";
+    PowerHoldPolicy.Firmware seen = PowerHoldPolicy.Firmware.parse("PH1F\tunverified\t" + h + "\tunreadable\tunknown-path");
+    check(!seen.verified && seen.api.equals(h) && "unknown-path".equals(seen.service), "Unverified firmware line is read with its marks");
+    check(seen.sameAs(PowerHoldPolicy.Firmware.parse(seen.line())), "Firmware line survives a round trip");
+    check(PowerHoldPolicy.Firmware.parse("PH1F\tverified\t" + h + "\t" + h + "\t" + h).verified, "Verified firmware line is read");
+    for (String bad : new String[]{null, "", "PH1F\tverified", "PH1F\tmaybe\t" + h + "\t" + h + "\t" + h,
+        "PH1F\tverified\t" + h + "\t" + h + "\t" + h + "\textra", "PH1F\tverified\tABC\t" + h + "\t" + h,
+        "PH1\tverified\t" + h + "\t" + h + "\t" + h, "PH1F\tverified\t" + h + "\t" + h + "\t" + h.substring(1),
+        "PH1F\tverified\t" + h + "\tunreadable\t" + h, "PH1F\tverified\t" + h + "\t" + h + "\tunknown-path"}) {
+      boolean rejected = false;
+      try { PowerHoldPolicy.Firmware.parse(bad); } catch (IllegalArgumentException expected) { rejected = true; }
+      check(rejected, "Malformed firmware line rejected: " + bad);
+    }
+
+    check("read:ClassNotFoundException".equals(PowerHoldPolicy.bridgeReason("read:ClassNotFoundException")), "Stage and exception class pass");
+    check("deadline".equals(PowerHoldPolicy.bridgeReason("deadline")), "A bare stage passes");
+    String longName = String.format("%065d", 0).replace('0', 'A'); // Java 8: no String.repeat
+    for (String bad : new String[]{null, "", "read:", "read:Class Name", "read:x\ty", "READ:Error", "read:" + longName, "connect:Error\nPH1\tOK"})
+      check("unavailable".equals(PowerHoldPolicy.bridgeReason(bad)), "Anything else is not passed to the log: " + bad);
+
+    // H97X: TIME always reads -1, so a request confirms by switch, property, boot, P, charge and warning.
+    PowerHoldPolicy.Snapshot before = sample(0, -1, "", "Parking", 80, 0, "boot-a");
+    java.util.function.Function<PowerHoldPolicy.Snapshot, PowerHoldPolicy.Confirmation> wait =
+        after -> PowerHoldPolicy.confirmUnverified(new PowerHoldPolicy.Lease(before, 90), after, true);
+    java.util.function.Function<PowerHoldPolicy.Snapshot, PowerHoldPolicy.Confirmation> last =
+        after -> PowerHoldPolicy.confirmUnverified(new PowerHoldPolicy.Lease(before, 90), after, false);
+    check(wait.apply(sample(0, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.CONFIRMED, "Armed request reads back as ours");
+    check(wait.apply(sample(1, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.CONFIRMED, "Active request reads back as ours");
+    check(wait.apply(sample(0, -1, "", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "Property not kept: taken back");
+    check(wait.apply(sample(0, -1, "on", "Parking", 80, 0, "boot-b")) == PowerHoldPolicy.Confirmation.REJECT, "Another boot: taken back");
+    check(wait.apply(sample(0, -1, "on", "Parking", 80, 1, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "OEM warning after the request: taken back");
+    check(wait.apply(sample(0, -1, "on", "Drive", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "Not in P any more: taken back");
+    check(wait.apply(sample(2, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.WAIT, "Unknown switch value is read again");
+    check(last.apply(sample(2, -1, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "Still unknown at the last read: taken back");
+    check(wait.apply(sample(0, -1, "on", "Unknown", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.WAIT, "Unknown gear is read again");
+    check(last.apply(sample(0, -1, "on", "Parking", 101, 0, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "Impossible charge at the last read: taken back");
+    check(last.apply(null) == PowerHoldPolicy.Confirmation.REJECT, "No reading is never a confirmation");
+    check(wait.apply(sample(0, 5, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.WAIT, "A reported duration that is not ours is read again");
+    check(last.apply(sample(0, 5, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.REJECT, "Still another duration at the last read: taken back");
+    check(last.apply(sample(0, 3, "on", "Parking", 80, 0, "boot-a")) == PowerHoldPolicy.Confirmation.CONFIRMED, "A reported duration that is ours confirms");
+
+    // A firmware that reports TIME must show ours; the old value right after the request may lag.
+    PowerHoldPolicy.Snapshot timed = sample(0, 2, "", "Parking", 80, 0, "boot-a");
+    PowerHoldPolicy.Lease lease = new PowerHoldPolicy.Lease(timed, 90);
+    check(PowerHoldPolicy.confirmUnverified(lease, sample(0, 2, "on", "Parking", 80, 0, "boot-a"), true) == PowerHoldPolicy.Confirmation.WAIT, "Old duration right after the request is read again");
+    check(PowerHoldPolicy.confirmUnverified(lease, sample(0, 3, "on", "Parking", 80, 0, "boot-a"), true) == PowerHoldPolicy.Confirmation.CONFIRMED, "Requested duration confirms");
+    check(PowerHoldPolicy.confirmUnverified(new PowerHoldPolicy.Lease(timed, 90), sample(0, 5, "on", "Parking", 80, 0, "boot-a"), true) == PowerHoldPolicy.Confirmation.REJECT, "Another duration: taken back");
+    check(PowerHoldPolicy.confirmUnverified(new PowerHoldPolicy.Lease(timed, 90), sample(0, 2, "on", "Parking", 80, 0, "boot-a"), false) == PowerHoldPolicy.Confirmation.REJECT, "Old duration at the last read: taken back");
+
+    check("switch=0 time=-1 property=off gear=Parking soc=80 warning=0".equals(before.log()), "Log line of a snapshot");
+    check(sample(1, -1, "on", "Parking", 80, 0, "boot-a").log().contains("property=on"), "On is shown");
+    String secret = sample(0, -1, "camp-extender-7", "Parking", 80, 0, "boot-a").log();
+    check(secret.contains("property=other") && !secret.contains("camp"), "Any other property value stays out of the log");
+  }
+
   public static void main(String[] args) {
     // Removing a guard, confusing queued with ECU active, or restoring a changed lease
     // must fail these tests. Fixtures are hand-selected OEM boundary values.
@@ -221,6 +277,7 @@ public final class PowerHoldPolicyTest {
       check(!PowerHoldPolicy.journalExpired(unreadable, sample(0, 15, "", "Parking", 80, 0, "boot-b")),
           "An unreadable journal stays visible instead of being cleared");
     try { controllerCoordination(); } catch (Exception failure) { throw new AssertionError(failure); }
+    unverifiedFirmware();
     System.out.println("PASS: Power Hold policy (" + checks + " checks), no hardware actions");
   }
 }

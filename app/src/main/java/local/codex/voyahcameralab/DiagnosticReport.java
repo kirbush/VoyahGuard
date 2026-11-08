@@ -32,6 +32,8 @@ final class DiagnosticReport {
   static final String PREFIX = "Voyah-Guard-report-";
   static final String NAME = PREFIX + "[0-9]{8}-[0-9]{6}\\.zip";
   private static final int LOGCAT_BYTES = 4 * 1024 * 1024, ADAPTIVE_BYTES = 256 * 1024;
+  /** Which firmware build this is, beyond the Android fields: a fixed list, nothing personal. */
+  private static final String[] FIRMWARE_PROPERTIES = {"ro.build.date", "ro.build.description", "ro.build.product_3rdparty", "persist.qg.canbus.ipk_software"};
 
   private DiagnosticReport() {}
 
@@ -74,6 +76,7 @@ final class DiagnosticReport {
     out.append("Model=").append(Build.MODEL).append("\nProduct=").append(Build.PRODUCT).append("\nDevice=").append(Build.DEVICE).append('\n');
     out.append("Display=").append(Build.DISPLAY).append("\nFingerprint=").append(Build.FINGERPRINT).append('\n');
     out.append("SDK=").append(Build.VERSION.SDK_INT).append("\nAppUID=").append(android.os.Process.myUid()).append('\n');
+    for (String name : FIRMWARE_PROPERTIES) out.append(name).append('=').append(property(name)).append('\n');
     out.append("\nSettings:\n");
     Map<String, ?> settings = new TreeMap<>(context.getSharedPreferences("camera", Context.MODE_PRIVATE).getAll());
     for (Map.Entry<String, ?> entry : settings.entrySet()) out.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
@@ -85,6 +88,9 @@ final class DiagnosticReport {
     File external = context.getExternalFilesDir(null);
     section(out, "State");
     out.append(external == null ? "no external files" : tail(new File(external, "state.json"), 64 * 1024));
+    section(out, "Power Hold");
+    try { out.append(PowerHoldController.shared(context).reportText()); }
+    catch (Exception e) { out.append("unavailable: ").append(e).append('\n'); }
     section(out, "Storage");
     try {
       RecordingStore.Snapshot s = new RecordingStore(context).snapshot();
@@ -127,6 +133,24 @@ final class DiagnosticReport {
       synchronized (bytes) { return bytes.toString("UTF-8"); }
     } catch (Exception e) {
       return "unavailable: " + e + "\n";
+    } finally { if (process != null) process.destroy(); }
+  }
+
+  private static String property(String name) {
+    Process process = null;
+    try {
+      process = new ProcessBuilder("getprop", name).redirectErrorStream(true).start();
+      // One property is far below the pipe buffer, so it is read only after the process ended.
+      if (!process.waitFor(2, TimeUnit.SECONDS)) return "timeout";
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      try (InputStream in = process.getInputStream()) {
+        byte[] buffer = new byte[256];
+        int n;
+        while ((n = in.read(buffer)) != -1 && bytes.size() < 512) bytes.write(buffer, 0, n);
+      }
+      return bytes.toString("UTF-8").trim();
+    } catch (Exception e) {
+      return "unavailable";
     } finally { if (process != null) process.destroy(); }
   }
 

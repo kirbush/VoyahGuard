@@ -70,6 +70,12 @@ final class PowerHoldPolicy {
           && soc == other.soc && warning == other.warning && equal(property, other.property)
           && equal(gear, other.gear) && equal(boot, other.boot);
     }
+    /** For the app log: the property is reduced to on/off/other, never its raw value. */
+    String log() {
+      String shown = "on".equals(property) ? "on" : normal(property).equals("off") ? "off" : "other";
+      return "switch=" + switchValue + " time=" + rawTime + " property=" + shown + " gear=" + gear
+          + " soc=" + soc + " warning=" + warning;
+    }
     String wire() {
       if (property == null || gear == null || !gear.matches("[A-Za-z_]{0,64}")
           || boot == null || !boot.matches("[A-Za-z0-9-]{1,64}"))
@@ -117,6 +123,55 @@ final class PowerHoldPolicy {
   static State stateAfterQueued(Snapshot snapshot) {
     State value = state(snapshot);
     return value == State.OFF ? State.REQUESTED : value;
+  }
+
+  /**
+   * What the bridge found installed. Verified means the SDK and the service match one of the two
+   * firmwares whose files were checked by hand; any other firmware is still read and may be tried.
+   */
+  static final class Firmware {
+    private static final String MARK = "[0-9a-f]{64}|unreadable|unknown-path";
+    final boolean verified;
+    final String api, vehicle, service;
+    Firmware(boolean verified, String api, String vehicle, String service) {
+      this.verified = verified; this.api = api; this.vehicle = vehicle; this.service = service;
+    }
+    /** The bridge's "PH1F" line; anything else is not a firmware report. */
+    static Firmware parse(String line) {
+      String[] f = line == null ? new String[0] : line.split("\t", -1);
+      if (f.length != 5 || !"PH1F".equals(f[0]) || !f[1].matches("verified|unverified")
+          || !f[2].matches(MARK) || !f[3].matches(MARK) || !f[4].matches(MARK))
+        throw new IllegalArgumentException("Invalid firmware line");
+      if ("verified".equals(f[1]) && !(f[2] + f[3] + f[4]).matches("[0-9a-f]{192}"))
+        throw new IllegalArgumentException("Verified firmware needs three hashes");
+      return new Firmware("verified".equals(f[1]), f[2], f[3], f[4]);
+    }
+    String line() { return "PH1F\t" + (verified ? "verified" : "unverified") + "\t" + api + "\t" + vehicle + "\t" + service; }
+    String describe() {
+      return (verified ? "verified" : "unverified") + " QGAPI=" + api + " QGVehicle=" + vehicle + " CanBusService=" + service;
+    }
+    boolean sameAs(Firmware other) { return other != null && line().equals(other.line()); }
+  }
+
+  /** A bridge failure: one fixed stage and an exception class, never an OEM value. */
+  static String bridgeReason(String raw) {
+    return raw != null && raw.matches("[a-z-]{1,16}(:[A-Za-z0-9_$]{1,64})?") ? raw : "unavailable";
+  }
+
+  enum Confirmation { CONFIRMED, WAIT, REJECT }
+
+  /**
+   * Unverified firmware: the request must read back as ours, or it is taken back at once. On
+   * H97X the duration always reads -1, so what is checked is the switch, the property, the boot,
+   * P, the charge and the warning; a reported duration must be ours.
+   */
+  static Confirmation confirmUnverified(Lease lease, Snapshot after, boolean mayWait) {
+    ReleaseDecision decision = lease.releaseDecision(after);
+    // Lease accepts any duration when the original did not report one; here a reported one must be ours.
+    boolean ours = decision == ReleaseDecision.RELEASE && (!after.timeReported() || after.rawTime == lease.rawTime);
+    if (ours) return Confirmation.CONFIRMED;
+    boolean unsure = decision == ReleaseDecision.UNKNOWN || decision == ReleaseDecision.RELEASE;
+    return unsure && mayWait ? Confirmation.WAIT : Confirmation.REJECT;
   }
 
   static final class Lease {
