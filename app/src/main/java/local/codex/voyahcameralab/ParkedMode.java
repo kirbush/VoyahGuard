@@ -22,7 +22,7 @@ final class ParkedMode {
   private static final String DARK = "screens_dark", TAG = "SentryParked";
 
   private final SharedPreferences preferences;
-  private final BooleanSupplier holding;
+  private final BooleanSupplier holding, recording;
   private final Runnable unlocked;
   private final ScreenControl screens;
   private final VoiceWarning voice;
@@ -52,12 +52,14 @@ final class ParkedMode {
 
   /**
    * @param holding whether this recording holds the power: the climate option belongs to it
+   * @param recording whether a video is being written, for the log of a lock
    * @param unlocked told once per unlock of a car that was locked: never for an unreadable status
    */
-  ParkedMode(Context context, BooleanSupplier holding, Runnable unlocked) {
+  ParkedMode(Context context, BooleanSupplier holding, BooleanSupplier recording, Runnable unlocked) {
     this.unlocked = unlocked;
     preferences = context.getSharedPreferences("camera", Context.MODE_PRIVATE);
     this.holding = holding;
+    this.recording = recording;
     lightsAllowed = GuardControl.canFlashLights(context);
     AvmViewControl.setApk(context.getApplicationInfo().sourceDir); // the bridges below need it before the camera starts
     screens = new ScreenControl(context);
@@ -180,7 +182,13 @@ final class ParkedMode {
     ParkedPolicy.Reading reading = GuardControl.read();
     boolean was = guarded;
     guarded = ParkedPolicy.guarded(reading);
-    if (guarded != was) AppLog.i(TAG, (guarded ? "locked" : "unlocked") + (reading == null ? " (status unreadable)" : " armed=" + reading.armed + " air=" + reading.airOn + " care=" + reading.careMode));
+    if (guarded != was) {
+      boolean writing = recording.getAsBoolean();
+      AppLog.i(TAG, (guarded ? "locked" : "unlocked") + (reading == null ? " (status unreadable)" : " armed=" + reading.armed + " air=" + reading.airOn + " care=" + reading.careMode)
+          + " recording=" + writing + " holdOption=" + holding.getAsBoolean()); // the option, not proof of Power Hold
+      // Seen in a tester report: the car was locked with Сторож open but «Старт» never pressed.
+      if (guarded && !writing) AppLog.w(TAG, "locked while not recording: the lock does not start a recording");
+    }
     observe(reading);
     if (!guarded) voice.endScenario();
     // Seen on the car: the climate unit may ignore a command, so an off that did not take is sent again.

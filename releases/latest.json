@@ -1,8 +1,8 @@
 {
-  "tag": "v0.8-beta",
-  "title": "VoyahGuard 0.8-beta",
-  "apk": "artifacts/VoyahGuard-0.8.apk",
+  "tag": "v0.8.1-beta",
+  "title": "VoyahGuard 0.8.1-beta",
+  "apk": "artifacts/VoyahGuard-0.8.1.apk",
   "checksums": "artifacts/SHA256SUMS",
-  "notes": "releases/v0.8-beta.md",
+  "notes": "releases/v0.8.1-beta.md",
   "prerelease": false
 }

@@ -27,7 +27,18 @@ public final class PowerHoldBridge {
 
   /** Exit code of a run that certainly wrote nothing, so the caller may safely try again. */
   static final int NOT_SENT = 3;
+  /** The service is installed somewhere else: its file is not hashed, the firmware is unverified. */
+  static final int UNKNOWN_LOCATION = -1;
+  /** Unverified firmware: reads after a request before it is taken back (one, then a re-read every step). */
+  private static final int CONFIRM_READS = 6;
+  private static final long CONFIRM_STEP_MS = 250, UNDO_RESERVE_MS = 1000;
+  /** Unverified firmware: the confirmation and the undo must both fit before the first write. */
+  private static final long UNVERIFIED_BUDGET_MS = (CONFIRM_READS - 1) * CONFIRM_STEP_MS + UNDO_RESERVE_MS + 250;
+  /** Printed once the undo's disable was queued, so the caller knows it went out even if a later step failed. */
+  static final String UNDO_SENT = "PH1U\tqueued";
   private static volatile boolean writeAttempted;
+  /** Where a failed run stopped, from a fixed list: the app log gets this, never OEM output. */
+  private static volatile String stage = "arguments";
 
   private final Object service, switchState, timeState, warningState, socState;
   private final Method getter, gearGetter, bundleSetter, propertyGet, propertySet;
@@ -90,7 +101,37 @@ public final class PowerHoldBridge {
       throw new IllegalStateException("deadline");
   }
 
-  private static String readBoot() throws Exception {
+  /** Unverified firmware: a request that does not read back as ours within a second is not kept. */
+  private PowerHoldPolicy.Snapshot confirm(PowerHoldPolicy.Lease lease, PowerHoldPolicy.Snapshot after) throws Exception {
+    for (int read = 1; ; read++) {
+      boolean mayWait = read < CONFIRM_READS
+          && android.os.SystemClock.elapsedRealtime() + CONFIRM_STEP_MS + UNDO_RESERVE_MS < deadline;
+      switch (PowerHoldPolicy.confirmUnverified(lease, after, mayWait)) {
+        case CONFIRMED: return after;
+        case REJECT: return null;
+        default: Thread.sleep(CONFIRM_STEP_MS); after = snapshot();
+      }
+    }
+  }
+  /**
+   * Takes a request back the way release does: switch off, the property as it was. Each step is
+   * tried even if the one before failed: the property does not depend on the service.
+   */
+  private PowerHoldPolicy.Snapshot undo(PowerHoldPolicy.Lease lease, PowerHoldPolicy.Snapshot original) throws Exception {
+    Exception first = null;
+    try {
+      queue(lease.releaseTime(), false);
+      System.out.println(UNDO_SENT);
+      System.out.flush();
+    } catch (Exception failure) { first = failure; }
+    try {
+      if ("on".equals(property())) writeProperty(original.property.isEmpty() ? "off" : original.property);
+    } catch (Exception failure) { if (first == null) first = failure; }
+    if (first != null) throw first;
+    return snapshot();
+  }
+
+  static String readBoot() throws Exception {
     try (InputStream stream = new FileInputStream("/proc/sys/kernel/random/boot_id")) {
       byte[] buffer = new byte[128];
       int count = stream.read(buffer);
@@ -112,16 +153,21 @@ public final class PowerHoldBridge {
   }
   static int serviceLocation(String installedPath) {
     for (int i = 0; i < SERVICE_PATHS.length; i++) if (SERVICE_PATHS[i].equals(installedPath)) return i;
-    throw new IllegalArgumentException("Unsupported installed CanBusService location");
+    return UNKNOWN_LOCATION;
   }
-  private static void verifyFirmware(int location) throws Exception {
-    if (location < 0 || location >= SERVICE_PATHS.length) throw new IllegalArgumentException("firmware");
-    String api = hash(API_PATH), vehicle = hash(VEHICLE_PATH), service = hash(SERVICE_PATHS[location]);
-    if (!API_SHA.equals(api) || !((VEHICLE_131.equals(vehicle) && SERVICE_131.equals(service))
-        || (VEHICLE_BASELINE.equals(vehicle) && SERVICE_BASELINE.equals(service))))
-      throw new IllegalStateException("firmware");
+  /** Reading only; the app calls it too, for the tester report. */
+  static PowerHoldPolicy.Firmware firmware(int location) {
+    String api = hashOrMark(API_PATH), vehicle = hashOrMark(VEHICLE_PATH);
+    String service = location >= 0 && location < SERVICE_PATHS.length ? hashOrMark(SERVICE_PATHS[location]) : "unknown-path";
+    boolean verified = API_SHA.equals(api) && ((VEHICLE_131.equals(vehicle) && SERVICE_131.equals(service))
+        || (VEHICLE_BASELINE.equals(vehicle) && SERVICE_BASELINE.equals(service)));
+    return new PowerHoldPolicy.Firmware(verified, api, vehicle, service);
+  }
+  private static String hashOrMark(String path) {
+    try { return hash(path); } catch (Exception unreadable) { return "unreadable"; }
   }
   private static void reply(String code, PowerHoldPolicy.Snapshot value) {
+    stage = "reply";
     System.out.println("PH1\t" + code + "\t" + value.wire());
     System.out.flush();
   }
@@ -155,31 +201,55 @@ public final class PowerHoldBridge {
           && !("acquire".equals(operation) && args.length == 5)
           && !("release".equals(operation) && args.length == 5))
         throw new IllegalArgumentException("operation");
-      if (!args[1].matches("[0-2]")) throw new IllegalArgumentException("firmware");
-      verifyFirmware(Integer.parseInt(args[1]));
+      if (!args[1].matches("-1|[0-2]")) throw new IllegalArgumentException("firmware");
+      stage = "firmware";
+      // Any firmware is read; an unverified one is reported, and its requests must confirm.
+      PowerHoldPolicy.Firmware firmware = firmware(Integer.parseInt(args[1]));
+      System.out.println(firmware.line());
+      System.out.flush();
+      stage = "connect";
       PowerHoldBridge bridge = new PowerHoldBridge(deadline);
+      stage = "read";
       PowerHoldPolicy.Snapshot current = bridge.snapshot();
       if ("status".equals(operation)) reply("OK", current);
       else {
+        stage = "arguments";
         int minutes = Integer.parseInt(args[3]);
         int raw = PowerHoldPolicy.rawMinutes(minutes);
         PowerHoldPolicy.Snapshot original = PowerHoldPolicy.Snapshot.parse(args[4]);
         PowerHoldPolicy.Lease lease = new PowerHoldPolicy.Lease(original, minutes);
         if ("acquire".equals(operation)) {
           // Re-read immediately before the first write; comparison is best effort, not atomic CAS.
+          stage = "read";
           current = bridge.snapshot();
           if (!original.sameAs(current) || !PowerHoldPolicy.canAcquire(current)) reply("STALE", current);
           else {
+            stage = "time";
+            // Nothing is written yet, so running short here exits NOT_SENT and the caller may try again.
+            if (!firmware.verified && android.os.SystemClock.elapsedRealtime() + UNVERIFIED_BUDGET_MS >= deadline)
+              throw new IllegalStateException("time");
+            stage = "write";
             bridge.queue(raw, true);
+            stage = "property";
             try { bridge.writeProperty("on"); }
             catch (Exception failure) { bridge.queue(raw, false); throw failure; } // Never leave a half-made request.
-            reply("QUEUED", bridge.snapshot());
+            stage = "confirm";
+            if (firmware.verified) reply("QUEUED", bridge.snapshot());
+            else {
+              PowerHoldPolicy.Snapshot confirmed;
+              try { confirmed = bridge.confirm(lease, bridge.snapshot()); }
+              catch (Exception unreadable) { confirmed = null; } // what cannot be read back is not kept
+              if (confirmed != null) reply("QUEUED", confirmed);
+              else { stage = "undo"; reply("REJECTED", bridge.undo(lease, original)); }
+            }
           }
         } else {
+          stage = "read";
           current = bridge.snapshot();
           PowerHoldPolicy.ReleaseDecision decision = lease.releaseDecision(current);
           if (decision != PowerHoldPolicy.ReleaseDecision.RELEASE) reply(decision.name(), current);
           else {
+            stage = "release";
             bridge.queue(lease.releaseTime(), false);
             // A different property after the queued request may be an external update.
             // OEM callbacks may clear it too; exact equality still avoids blind overwrites.
@@ -198,7 +268,8 @@ public final class PowerHoldBridge {
       // Never expose arbitrary OEM output/property values to the UI or offer raw retry commands.
       Throwable cause = failure.getCause() == null ? failure : failure.getCause();
       android.util.Log.w("PowerHoldBridge", cause.toString());
-      System.out.println("PH1\tERROR\tunavailable-or-incomplete");
+      // The stage and the exception class only: the app's log is in the tester report.
+      System.out.println("PH1\tERROR\t" + PowerHoldPolicy.bridgeReason(stage + ":" + cause.getClass().getSimpleName()));
       System.out.flush();
       if (!writeAttempted) exit = NOT_SENT;
     } finally {
